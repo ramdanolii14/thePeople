@@ -328,8 +328,28 @@ app.post('/api/posts', authenticateToken, async (req, res) => {
 
 app.get('/api/posts/:id/likes', async (req, res) => {
     try {
-        const countRes = await pool.query('SELECT COUNT(*)::int AS count FROM public.post_likes WHERE post_id = $1', [req.params.id]);
-        res.json({ likes_count: countRes.rows[0].count });
+        const countRes = await pool.query(
+            'SELECT COUNT(*)::int AS count FROM public.post_likes WHERE post_id = $1',
+            [req.params.id]
+        );
+
+        let liked = false;
+        const authHeader = req.headers.authorization;
+        const token = authHeader && authHeader.split(' ')[1];
+        if (token) {
+            try {
+                const decoded = jwt.verify(token, JWT_SECRET);
+                const likeRes = await pool.query(
+                    'SELECT EXISTS (SELECT 1 FROM public.post_likes WHERE post_id = $1 AND user_id = $2) AS liked',
+                    [req.params.id, decoded.id]
+                );
+                liked = Boolean(likeRes.rows[0].liked);
+            } catch {
+                // Public visitors can still read the like count when their token is absent or expired.
+            }
+        }
+
+        res.json({ likes_count: countRes.rows[0].count, liked });
     } catch (error) {
         res.status(500).json({ message: 'Gagal mengambil like', error: error.message });
     }
@@ -337,8 +357,22 @@ app.get('/api/posts/:id/likes', async (req, res) => {
 
 app.post('/api/posts/:id/like', authenticateToken, async (req, res) => {
     try {
-        await pool.query('INSERT INTO public.post_likes (post_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.params.id, req.userId]);
-        const countRes = await pool.query('SELECT COUNT(*)::int AS count FROM public.post_likes WHERE post_id = $1', [req.params.id]);
+        const existingLike = await pool.query(
+            'SELECT 1 FROM public.post_likes WHERE post_id = $1 AND user_id = $2 LIMIT 1',
+            [req.params.id, req.userId]
+        );
+
+        if (existingLike.rows.length === 0) {
+            await pool.query(
+                'INSERT INTO public.post_likes (post_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+                [req.params.id, req.userId]
+            );
+        }
+
+        const countRes = await pool.query(
+            'SELECT COUNT(*)::int AS count FROM public.post_likes WHERE post_id = $1',
+            [req.params.id]
+        );
         res.json({ liked: true, likes_count: countRes.rows[0].count });
     } catch (error) {
         res.status(500).json({ message: 'Gagal like', error: error.message });
@@ -371,6 +405,10 @@ app.get('/api/posts/:id/comments', async (req, res) => {
 app.post('/api/posts/:id/comments', authenticateToken, async (req, res) => {
     try {
         const { comment_text } = req.body;
+        if (typeof comment_text !== 'string' || !comment_text.trim()) {
+            return res.status(400).json({ message: 'Komentar tidak boleh kosong.' });
+        }
+
         const insertRes = await pool.query(
             `INSERT INTO public.post_comments (post_id, user_id, comment_text) VALUES ($1, $2, $3) RETURNING id`,
             [req.params.id, req.userId, comment_text.trim()]
