@@ -5,6 +5,7 @@ import { API_BASE_URL } from '../api/config';
 import { useAuth } from '../context/AuthContext';
 import GoogleAvatar from '../components/GoogleAvatar';
 import PostModal from '../components/PostModal';
+import PostThumbnail from '../components/PostThumbnail';
 
 export default function IndexPage() {
   const { currentUser } = useAuth();
@@ -136,11 +137,7 @@ export default function IndexPage() {
                 className="bg-white rounded-xl overflow-hidden shadow-xs border border-gray-200 hover:shadow-md transition cursor-pointer flex flex-col"
               >
                 <div className="aspect-square bg-gray-100 overflow-hidden">
-                  <img
-                    src={post.photo_url}
-                    alt={post.title}
-                    className="w-full h-full object-cover"
-                  />
+                  <PostThumbnail post={post} className="h-full w-full object-cover" />
                 </div>
                 <div className="p-3.5 flex-1 flex flex-col justify-between">
                   <div>
