@@ -5,6 +5,10 @@ function isHlsUrl(url) {
   return typeof url === 'string' && /\.m3u8(?:$|\?)/i.test(url);
 }
 
+function isVideoUrl(url) {
+  return typeof url === 'string' && /\.(m3u8|mp4|mov|m4v|webm)(?:$|\?)/i.test(url);
+}
+
 function inferHlsThumbnail(url) {
   if (!url || typeof window === 'undefined') return '';
   try {
@@ -26,9 +30,9 @@ export default function PostThumbnail({ post, className = 'h-full w-full object-
         urls.push(value.trim());
       }
     };
-    add(post?.thumbnail_url);
+    if (!isVideoUrl(post?.thumbnail_url)) add(post?.thumbnail_url);
     add(inferHlsThumbnail(photoUrl));
-    if (!isHlsUrl(photoUrl)) add(photoUrl);
+    if (!isVideoUrl(photoUrl)) add(photoUrl);
     return urls;
   }, [post?.thumbnail_url, photoUrl]);
 
