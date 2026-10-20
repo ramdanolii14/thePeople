@@ -1,85 +1,131 @@
-// File: frontend/src/components/PostModal.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Heart, MessageCircle, Send, X } from 'lucide-react';
 import { API_BASE_URL } from '../api/config';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import GoogleAvatar from './GoogleAvatar';
 import HlsVideoPlayer from './HlsVideoPlayer';
 
 export default function PostModal({ post, onClose }) {
   const navigate = useNavigate();
   const { currentUser, token } = useAuth();
+  const { showToast } = useToast();
 
-  const [likesCount, setLikesCount] = useState(post?.likes_count || 0);
+  const [likesCount, setLikesCount] = useState(0);
   const [isLiked, setIsLiked] = useState(false);
+  const [loadingLike, setLoadingLike] = useState(false);
   const [comments, setComments] = useState([]);
   const [commentInput, setCommentInput] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
 
   useEffect(() => {
-    if (!post) return;
-    fetch(`${API_BASE_URL}/posts/${post.id}/comments`)
-      .then((res) => (res.ok ? res.json() : []))
-      .then((data) => setComments(data))
-      .catch((err) => console.error(err));
-  }, [post]);
+    if (!post) return undefined;
+
+    let active = true;
+    setLikesCount(Number(post.likes_count) || 0);
+    setIsLiked(false);
+    setComments([]);
+    setCommentInput('');
+
+    const headers = token ? { Authorization: 'Bearer ' + token } : {};
+
+    fetch(API_BASE_URL + '/posts/' + post.id + '/comments')
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || 'Komentar gagal dimuat.');
+        return data;
+      })
+      .then((data) => {
+        if (active) setComments(Array.isArray(data) ? data : []);
+      })
+      .catch((err) => {
+        if (active) showToast(err.message || 'Komentar gagal dimuat.', 'error');
+      });
+
+    fetch(API_BASE_URL + '/posts/' + post.id + '/likes', { headers })
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || 'Status like gagal dimuat.');
+        return data;
+      })
+      .then((data) => {
+        if (!active) return;
+        setLikesCount(Number(data.likes_count) || 0);
+        setIsLiked(Boolean(data.liked));
+      })
+      .catch((err) => {
+        if (active) showToast(err.message || 'Status like gagal dimuat.', 'error');
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [post?.id, token, showToast]);
 
   if (!post) return null;
 
   const goToAuthorProfile = () => {
     onClose();
-    navigate(`/user/${post.user_id}`);
+    navigate('/user/' + post.user_id);
   };
 
   const handleToggleLike = async () => {
     if (!currentUser) {
-      alert('Silakan login terlebih dahulu.');
+      showToast('Silakan masuk untuk menyukai postingan.', 'info');
+      onClose();
       navigate('/auth');
       return;
     }
 
+    if (loadingLike) return;
+    setLoadingLike(true);
     try {
-      const method = isLiked ? 'DELETE' : 'POST';
-      const res = await fetch(`${API_BASE_URL}/posts/${post.id}/like`, {
-        method: method,
-        headers: { Authorization: `Bearer ${token}` }
+      const res = await fetch(API_BASE_URL + '/posts/' + post.id + '/like', {
+        method: isLiked ? 'DELETE' : 'POST',
+        headers: { Authorization: 'Bearer ' + token }
       });
       const data = await res.json();
-      if (res.ok) {
-        setIsLiked(data.liked);
-        setLikesCount(data.likes_count);
-      }
+      if (!res.ok) throw new Error(data.message || 'Like gagal diperbarui.');
+      setIsLiked(Boolean(data.liked));
+      setLikesCount(Number(data.likes_count) || 0);
+      showToast(data.liked ? 'Like ditambahkan.' : 'Like dihapus.', 'success');
     } catch (err) {
-      console.error(err);
+      showToast(err.message || 'Like gagal diperbarui.', 'error');
+    } finally {
+      setLoadingLike(false);
     }
   };
 
-  const handleSendComment = async (e) => {
-    e.preventDefault();
+  const handleSendComment = async (event) => {
+    event.preventDefault();
+    const text = commentInput.trim();
+
     if (!currentUser) {
-      alert('Silakan login terlebih dahulu.');
+      showToast('Silakan masuk untuk berkomentar.', 'info');
+      onClose();
       navigate('/auth');
       return;
     }
-    if (!commentInput.trim()) return;
+    if (!text || submittingComment) return;
 
     setSubmittingComment(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/posts/${post.id}/comments`, {
+      const res = await fetch(API_BASE_URL + '/posts/' + post.id + '/comments', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
+          Authorization: 'Bearer ' + token
         },
-        body: JSON.stringify({ comment_text: commentInput })
+        body: JSON.stringify({ comment_text: text })
       });
-      const newComment = await res.json();
-      if (res.ok) {
-        setComments((prev) => [...prev, newComment]);
-        setCommentInput('');
-      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || 'Komentar gagal dikirim.');
+      setComments((previous) => [...previous, data]);
+      setCommentInput('');
+      showToast('Komentar berhasil dikirim.', 'success');
     } catch (err) {
-      console.error(err);
+      showToast(err.message || 'Komentar gagal dikirim.', 'error');
     } finally {
       setSubmittingComment(false);
     }
@@ -87,89 +133,111 @@ export default function PostModal({ post, onClose }) {
 
   const isVideo =
     (post.photo_url && post.photo_url.includes('.m3u8')) ||
-    (post.photo_url && post.photo_url.match(/\.(mp4|mov|m4v|webm)$/i));
+    (post.photo_url && /\.(mp4|mov|m4v|webm)(?:$|\?)/i.test(post.photo_url));
 
   return (
     <div
       onClick={onClose}
-      className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4 backdrop-blur-xs"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
     >
       <div
-        onClick={(e) => e.stopPropagation()}
-        className="bg-white rounded-2xl max-w-4xl w-full overflow-hidden shadow-2xl grid grid-cols-1 md:grid-cols-2 max-h-[90vh]"
+        onClick={(event) => event.stopPropagation()}
+        className="grid max-h-[90vh] w-full max-w-4xl grid-cols-1 overflow-hidden rounded-2xl bg-white shadow-2xl md:grid-cols-2"
       >
-        <div className="bg-black flex items-center justify-center aspect-square md:aspect-auto md:h-full overflow-hidden">
+        <div className="flex aspect-square items-center justify-center overflow-hidden bg-black md:aspect-auto md:h-full">
           {isVideo ? (
-            <HlsVideoPlayer src={post.photo_url} className="w-full h-full max-h-[80vh]" />
+            <HlsVideoPlayer src={post.photo_url} className="h-full max-h-[80vh] w-full" />
           ) : (
-            <img src={post.photo_url} alt={post.title} className="w-full h-full object-contain" />
+            <img src={post.photo_url} alt={post.title} className="h-full w-full object-contain" />
           )}
         </div>
 
-        <div className="flex flex-col h-full max-h-[90vh] overflow-hidden bg-white">
-          <div className="p-4 border-b border-gray-100 flex items-center justify-between">
-            <div onClick={goToAuthorProfile} className="flex items-center gap-3 cursor-pointer">
-              <GoogleAvatar name={post.author_name} src={post.profile_photo_url} size="md" />
-              <div>
-                <p className="font-bold text-sm text-gray-900">{post.author_name}</p>
-                <p className="text-[11px] text-gray-400">{post.category || 'Umum'}</p>
-              </div>
-            </div>
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-700 font-bold text-lg px-2">
-              X
+        <div className="flex max-h-[90vh] flex-col overflow-hidden bg-white">
+          <div className="flex items-center justify-between border-b border-gray-100 p-4">
+            <button
+              type="button"
+              onClick={goToAuthorProfile}
+              className="flex min-w-0 items-center gap-3 text-left"
+            >
+              <GoogleAvatar name={post.author_name || post.full_name} src={post.profile_photo_url} size="md" />
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-semibold text-gray-900">
+                  {post.author_name || post.full_name}
+                </span>
+                <span className="block text-[11px] text-gray-400">{post.category || 'Umum'}</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Tutup postingan"
+              className="rounded-lg p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-800"
+            >
+              <X className="h-5 w-5" aria-hidden="true" />
             </button>
           </div>
 
-          <div className="p-4 flex-1 overflow-y-auto space-y-4">
+          <div className="flex-1 space-y-4 overflow-y-auto p-4">
             <div>
-              <h3 className="font-bold text-lg text-gray-900">{post.title}</h3>
-              <p className="text-xs text-gray-600 mt-1 whitespace-pre-line">{post.description}</p>
+              <h3 className="text-lg font-semibold text-gray-900">{post.title}</h3>
+              <p className="mt-1 whitespace-pre-line text-sm leading-6 text-gray-600">{post.description}</p>
             </div>
 
-            <div className="flex items-center gap-2 pt-2 border-t border-gray-100">
+            <div className="flex items-center gap-3 border-t border-gray-100 pt-3">
               <button
+                type="button"
                 onClick={handleToggleLike}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition ${
-                  isLiked ? 'bg-red-50 text-red-600' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
+                disabled={loadingLike}
+                aria-pressed={isLiked}
+                className={'inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition disabled:cursor-wait disabled:opacity-60 ' + (
+                  isLiked
+                    ? 'bg-rose-50 text-rose-700'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                )}
               >
+                <Heart className="h-4 w-4" fill={isLiked ? 'currentColor' : 'none'} aria-hidden="true" />
                 <span>{isLiked ? 'Disukai' : 'Suka'}</span>
-                <span>({likesCount})</span>
+                <span>{likesCount}</span>
               </button>
+              <span className="inline-flex items-center gap-1.5 text-sm text-gray-500">
+                <MessageCircle className="h-4 w-4" aria-hidden="true" />
+                {comments.length} komentar
+              </span>
             </div>
 
-            <div className="space-y-3 pt-2 border-t border-gray-100">
-              <p className="text-xs font-bold text-gray-400 uppercase">Komentar ({comments.length})</p>
+            <section className="space-y-3 border-t border-gray-100 pt-3">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Komentar</h4>
               {comments.length === 0 ? (
-                <p className="text-xs text-gray-400 italic">Belum ada komentar.</p>
+                <p className="py-3 text-sm text-gray-400">Belum ada komentar.</p>
               ) : (
                 comments.map((comment) => (
                   <div key={comment.id} className="flex items-start gap-2.5">
                     <GoogleAvatar name={comment.full_name} src={comment.profile_photo_url} size="sm" />
-                    <div className="bg-gray-50 rounded-xl p-2.5 flex-1 text-xs">
-                      <span className="font-bold text-gray-900 block">{comment.full_name}</span>
-                      <p className="text-gray-700 mt-0.5">{comment.comment_text}</p>
+                    <div className="min-w-0 flex-1 rounded-xl bg-gray-50 px-3 py-2.5 text-sm">
+                      <p className="font-semibold text-gray-900">{comment.full_name}</p>
+                      <p className="mt-0.5 whitespace-pre-line break-words text-gray-700">{comment.comment_text}</p>
                     </div>
                   </div>
                 ))
               )}
-            </div>
+            </section>
           </div>
 
-          <form onSubmit={handleSendComment} className="p-3 border-t border-gray-100 flex gap-2 bg-white">
+          <form onSubmit={handleSendComment} className="flex gap-2 border-t border-gray-100 bg-white p-3">
             <input
               type="text"
-              placeholder={currentUser ? 'Tulis komentar...' : 'Login untuk berkomentar...'}
+              placeholder={currentUser ? 'Tulis komentar...' : 'Masuk untuk berkomentar'}
               value={commentInput}
-              disabled={!currentUser}
-              onChange={(e) => setCommentInput(e.target.value)}
-              className="flex-1 px-3 py-2 bg-gray-100 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-[#1877F2]"
+              disabled={!currentUser || submittingComment}
+              onChange={(event) => setCommentInput(event.target.value)}
+              className="min-w-0 flex-1 rounded-lg bg-gray-100 px-3 py-2.5 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1877F2] disabled:cursor-not-allowed"
             />
             <button
               type="submit"
-              disabled={submittingComment || !currentUser}
-              className="bg-[#1877F2] hover:bg-blue-700 disabled:opacity-50 text-white font-bold px-4 py-2 rounded-lg text-xs transition"
+              disabled={submittingComment || !currentUser || !commentInput.trim()}
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#1877F2] px-3.5 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
+              <Send className="h-4 w-4" aria-hidden="true" />
               Kirim
             </button>
           </form>
