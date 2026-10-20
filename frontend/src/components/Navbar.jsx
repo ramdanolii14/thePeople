@@ -1,6 +1,15 @@
-// File: frontend/src/components/Navbar.jsx
 import React from 'react';
 import { NavLink, Link, useNavigate } from 'react-router-dom';
+import {
+  UsersRound,
+  Home,
+  Images,
+  Plus,
+  LayoutDashboard,
+  UserRound,
+  LogIn,
+  LogOut
+} from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import GoogleAvatar from './GoogleAvatar';
 
@@ -9,11 +18,15 @@ export default function Navbar() {
   const navigate = useNavigate();
 
   const navItems = [
-    { to: '/', label: 'Index' },
-    { to: '/feed', label: 'Feed Marketplace' },
-    { to: '/add-post', label: '+ Tambah Post' },
-    { to: '/dashboard', label: 'Dashboard' },
-    { to: currentUser ? `/user/${currentUser.id}` : '/user', label: 'Halaman User' }
+    { to: '/', label: 'Beranda', Icon: Home },
+    { to: '/feed', label: 'Feed', Icon: Images },
+    { to: '/add-post', label: 'Buat', Icon: Plus },
+    { to: '/dashboard', label: 'Dashboard', Icon: LayoutDashboard },
+    {
+      to: currentUser ? '/user/' + currentUser.id : '/user',
+      label: 'Profil',
+      Icon: UserRound
+    }
   ];
 
   const handleLogout = () => {
@@ -22,91 +35,93 @@ export default function Navbar() {
   };
 
   return (
-    <header className="sticky top-0 z-40 bg-white shadow-xs border-b border-gray-200">
-      <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
-        <Link to="/" className="flex items-center gap-2.5">
-          <div className="w-10 h-10 rounded-xl bg-[#1877F2] flex items-center justify-center text-white font-bold text-xl">
-            P
-          </div>
-          <div>
-            <span className="font-bold text-lg tracking-tight text-gray-900 block leading-none">
-              PhotoMarket
-            </span>
-            <span className="text-[11px] text-emerald-600 font-semibold">
-              Multi-Page + Supabase PostgreSQL
-            </span>
-          </div>
+    <header className="sticky top-0 z-40 border-b border-gray-200 bg-white">
+      <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4">
+        <Link to="/" className="flex shrink-0 items-center gap-2.5">
+          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#1877F2] text-white">
+            <UsersRound className="h-5 w-5" strokeWidth={1.8} aria-hidden="true" />
+          </span>
+          <span>
+            <span className="block text-lg font-semibold leading-tight tracking-tight text-gray-900">thePeople</span>
+            <span className="block text-[11px] text-gray-500">Berbagi foto dan cerita</span>
+          </span>
         </Link>
 
-        <nav className="hidden md:flex items-center gap-1">
-          {navItems.map((item) => (
+        <nav className="hidden items-center gap-1 md:flex" aria-label="Navigasi utama">
+          {navItems.map(({ to, label, Icon }) => (
             <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === '/'}
+              key={to}
+              to={to}
+              end={to === '/'}
               className={({ isActive }) =>
-                `px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                'inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition ' + (
                   isActive
                     ? 'bg-blue-50 text-[#1877F2]'
-                    : 'text-gray-600 hover:bg-gray-100'
-                }`
+                    : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                )
               }
             >
-              {item.label}
+              <Icon className="h-4 w-4" strokeWidth={1.8} aria-hidden="true" />
+              {label}
             </NavLink>
           ))}
         </nav>
 
-        <div className="flex items-center gap-3">
+        <div className="flex shrink-0 items-center gap-2">
           {currentUser ? (
-            <div className="flex items-center gap-3">
+            <>
               <Link
-                to={`/user/${currentUser.id}`}
-                className="flex items-center gap-2 hover:bg-gray-100 p-1.5 pr-3 rounded-full transition"
+                to={'/user/' + currentUser.id}
+                className="flex items-center gap-2 rounded-full p-1.5 transition hover:bg-gray-50"
+                aria-label="Buka profil"
               >
                 <GoogleAvatar
                   name={currentUser.full_name}
                   src={currentUser.profile_photo_url}
                   size="sm"
                 />
-                <span className="text-sm font-semibold text-gray-700 hidden sm:inline">
+                <span className="hidden max-w-32 truncate text-sm font-medium text-gray-700 lg:inline">
                   {currentUser.full_name}
                 </span>
               </Link>
               <button
+                type="button"
                 onClick={handleLogout}
-                className="text-xs font-medium text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg border border-red-200"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
               >
+                <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
                 Keluar
               </button>
-            </div>
+            </>
           ) : (
             <Link
               to="/auth"
-              className="bg-[#1877F2] hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2 rounded-lg transition"
+              className="inline-flex items-center gap-2 rounded-lg bg-[#1877F2] px-3.5 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-700"
             >
-              Login / Register
+              <LogIn className="h-4 w-4" aria-hidden="true" />
+              Masuk
             </Link>
           )}
         </div>
       </div>
 
-      <div className="flex md:hidden overflow-x-auto border-t border-gray-100 px-2 py-1.5 bg-white gap-1">
-        {navItems.map((item) => (
+      <nav className="flex gap-1 overflow-x-auto border-t border-gray-100 bg-white px-2 py-1.5 md:hidden" aria-label="Navigasi mobile">
+        {navItems.map(({ to, label, Icon }) => (
           <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.to === '/'}
+            key={to}
+            to={to}
+            end={to === '/'}
             className={({ isActive }) =>
-              `px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap ${
-                isActive ? 'bg-[#1877F2] text-white' : 'text-gray-600 bg-gray-50'
-              }`
+              'inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium transition ' + (
+                isActive ? 'bg-blue-50 text-[#1877F2]' : 'text-gray-600 hover:bg-gray-50'
+              )
             }
           >
-            {item.label}
+            <Icon className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden="true" />
+            {label}
           </NavLink>
         ))}
-      </div>
+      </nav>
     </header>
   );
 }
