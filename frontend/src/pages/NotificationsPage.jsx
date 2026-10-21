@@ -76,6 +76,7 @@ export default function NotificationsPage() {
       setNotifications((previous) => previous.map((item) => (
         item.read_at ? item : { ...item, read_at: now }
       )));
+      window.dispatchEvent(new Event('notifications:refresh'));
       showToast('Semua notifikasi sudah ditandai dibaca.', 'success');
     } catch (error) {
       showToast(error.message || 'Notifikasi gagal diperbarui.', 'error');
@@ -96,6 +97,7 @@ export default function NotificationsPage() {
           setNotifications((previous) => previous.map((item) => (
             item.id === notification.id ? { ...item, read_at: data.read_at } : item
           )));
+          window.dispatchEvent(new Event('notifications:refresh'));
         }
       } catch {
         // Navigation still works if marking read fails temporarily.
