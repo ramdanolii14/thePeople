@@ -257,8 +257,7 @@ function processVideoUpload(jobId) {
             profiles.forEach((profile) => {
                 masterLines.push(
                     '#EXT-X-STREAM-INF:BANDWIDTH=' + profile.bandwidth +
-                    ',RESOLUTION=' + profile.width + 'x' + profile.height +
-                    ',NAME="' + profile.name + '"'
+                    ',RESOLUTION=' + profile.width + 'x' + profile.height
                 );
                 masterLines.push(profile.name + '/index.m3u8');
             });
