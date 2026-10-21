@@ -202,7 +202,7 @@ export default function HlsVideoPlayer({ src, className = '' }) {
     >
       <video
         ref={videoRef}
-        controls
+        controls={!isSwitching}
         playsInline
         preload="metadata"
         className={'h-full w-full object-contain ' + className}
