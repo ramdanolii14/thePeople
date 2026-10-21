@@ -144,9 +144,13 @@ export default function PostModal({ post, onClose }) {
         onClick={(event) => event.stopPropagation()}
         className="grid max-h-[90vh] w-full max-w-4xl grid-cols-1 overflow-hidden rounded-2xl bg-white shadow-2xl md:grid-cols-2"
       >
-        <div className="flex aspect-square items-center justify-center overflow-hidden bg-black md:aspect-auto md:h-full">
+        <div
+          className={isVideo
+            ? 'flex max-h-[55vh] min-h-0 items-center justify-center overflow-hidden bg-black md:max-h-[80vh]'
+            : 'flex aspect-square items-center justify-center overflow-hidden bg-black md:aspect-auto md:h-full'}
+        >
           {isVideo ? (
-            <HlsVideoPlayer src={post.photo_url} className="h-full max-h-[80vh] w-full" />
+            <HlsVideoPlayer src={post.photo_url} />
           ) : (
             <img src={post.photo_url} alt={post.title} className="h-full w-full object-contain" />
           )}
