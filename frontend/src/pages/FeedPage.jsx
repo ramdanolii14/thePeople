@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Plus, RefreshCw, ArrowUpRight } from 'lucide-react';
 import { API_BASE_URL, CATEGORIES } from '../api/config';
 import { useAuth } from '../context/AuthContext';
@@ -12,6 +12,7 @@ export default function FeedPage() {
   const { currentUser } = useAuth();
   const { showToast } = useToast();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [posts, setPosts] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -43,6 +44,19 @@ export default function FeedPage() {
   useEffect(() => {
     fetchFeedPosts();
   }, [fetchFeedPosts]);
+
+  useEffect(() => {
+    const requestedPostId = searchParams.get('post');
+    if (!requestedPostId || posts.length === 0) return;
+
+    const targetPost = posts.find((post) => String(post.id) === requestedPostId);
+    if (!targetPost) return;
+
+    setSelectedPost(targetPost);
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete('post');
+    setSearchParams(nextParams, { replace: true });
+  }, [posts, searchParams, setSearchParams]);
 
   return (
     <div className="flex flex-col gap-6 lg:flex-row">

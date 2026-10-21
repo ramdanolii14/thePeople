@@ -10,6 +10,7 @@ import EditPostPage from './pages/EditPostPage';
 import DashboardPage from './pages/DashboardPage';
 import UserProfilePage from './pages/UserProfilePage';
 import AuthPage from './pages/AuthPage';
+import NotificationsPage from './pages/NotificationsPage';
 
 export default function App() {
   return (
@@ -25,6 +26,7 @@ export default function App() {
                 <Route path="/add-post" element={<AddPostPage />} />
                 <Route path="/edit-post/:id" element={<EditPostPage />} />
                 <Route path="/dashboard" element={<DashboardPage />} />
+                <Route path="/notifications" element={<NotificationsPage />} />
                 <Route path="/user" element={<UserProfilePage />} />
                 <Route path="/user/:id" element={<UserProfilePage />} />
                 <Route path="/auth" element={<AuthPage />} />

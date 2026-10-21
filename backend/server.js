@@ -449,6 +449,174 @@ app.put('/api/users/profile', authenticateToken, async (req, res) => {
     }
 });
 
+// ============================================================================
+// Notifications: persistent activity alerts with server-side deduplication.
+// ============================================================================
+let notificationsTableReady = null;
+
+async function ensureNotificationsTable() {
+    if (!notificationsTableReady) {
+        notificationsTableReady = (async () => {
+            await pool.query(`
+                CREATE TABLE IF NOT EXISTS public.notifications (
+                    id BIGSERIAL PRIMARY KEY,
+                    recipient_user_id INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+                    actor_user_id INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+                    post_id INTEGER REFERENCES public.posts(id) ON DELETE SET NULL,
+                    type TEXT NOT NULL CHECK (type IN ('like', 'comment')),
+                    dedupe_key TEXT NOT NULL UNIQUE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    read_at TIMESTAMPTZ
+                )
+            `);
+            await pool.query(`
+                CREATE INDEX IF NOT EXISTS notifications_recipient_created_idx
+                ON public.notifications (recipient_user_id, created_at DESC)
+            `);
+            await pool.query(`
+                CREATE INDEX IF NOT EXISTS notifications_unread_idx
+                ON public.notifications (recipient_user_id, created_at DESC)
+                WHERE read_at IS NULL
+            `);
+        })().catch((error) => {
+            notificationsTableReady = null;
+            throw error;
+        });
+    }
+    return notificationsTableReady;
+}
+
+async function createActivityNotification({ recipientUserId, actorUserId, postId, type }) {
+    if (!recipientUserId || !actorUserId || !postId ||
+        String(recipientUserId) === String(actorUserId)) return;
+
+    let client;
+    try {
+        await ensureNotificationsTable();
+        client = await pool.connect();
+        await client.query('BEGIN');
+
+        // Serialize comment notification checks for the same actor/post so
+        // concurrent comment requests cannot bypass the cooldown.
+        const scopeKey = [recipientUserId, actorUserId, postId, type].join(':');
+        if (type === 'comment') {
+            await client.query(
+                'SELECT pg_advisory_xact_lock(hashtext($1)::bigint)',
+                ['notification:' + scopeKey]
+            );
+
+            const recentNotification = await client.query(
+                `SELECT 1
+                 FROM public.notifications
+                 WHERE recipient_user_id = $1
+                   AND actor_user_id = $2
+                   AND post_id = $3
+                   AND type = 'comment'
+                   AND created_at > NOW() - INTERVAL '10 minutes'
+                 LIMIT 1`,
+                [recipientUserId, actorUserId, postId]
+            );
+            if (recentNotification.rows.length > 0) {
+                await client.query('COMMIT');
+                return;
+            }
+        }
+
+        // A like alerts only once per actor/post pair for the lifetime of that post.
+        // The unique key also makes simultaneous repeated like requests idempotent.
+        const bucket = type === 'comment' ? Math.floor(Date.now() / 600000) : 'once';
+        const dedupeKey = [type, postId, recipientUserId, actorUserId, bucket].join(':');
+
+        await client.query(
+            `INSERT INTO public.notifications
+                (recipient_user_id, actor_user_id, post_id, type, dedupe_key)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (dedupe_key) DO NOTHING`,
+            [recipientUserId, actorUserId, postId, type, dedupeKey]
+        );
+        await client.query('COMMIT');
+    } catch (error) {
+        if (client) {
+            try {
+                await client.query('ROLLBACK');
+            } catch (rollbackError) {
+                console.error('Gagal membatalkan pembuatan notifikasi:', rollbackError.message);
+            }
+        }
+        // A notification failure must not make the actual like/comment fail.
+        console.error('Gagal membuat notifikasi aktivitas:', error.message);
+    } finally {
+        if (client) client.release();
+    }
+}
+
+app.get('/api/notifications/unread-count', authenticateToken, async (req, res) => {
+    try {
+        await ensureNotificationsTable();
+        const result = await pool.query(
+            'SELECT COUNT(*)::int AS unread_count FROM public.notifications WHERE recipient_user_id = $1 AND read_at IS NULL',
+            [req.userId]
+        );
+        res.json({ unread_count: result.rows[0].unread_count });
+    } catch (error) {
+        console.error('Gagal mengambil jumlah notifikasi:', error.message);
+        res.status(500).json({ message: 'Notifikasi gagal dimuat.' });
+    }
+});
+
+app.get('/api/notifications', authenticateToken, async (req, res) => {
+    try {
+        await ensureNotificationsTable();
+        const result = await pool.query(
+            `SELECT n.id, n.type, n.post_id, n.created_at, n.read_at,
+                    n.actor_user_id, u.full_name AS actor_name,
+                    u.profile_photo_url AS actor_photo, p.title AS post_title
+             FROM public.notifications n
+             JOIN public.users u ON u.id = n.actor_user_id
+             LEFT JOIN public.posts p ON p.id = n.post_id
+             WHERE n.recipient_user_id = $1
+             ORDER BY n.created_at DESC
+             LIMIT 50`,
+            [req.userId]
+        );
+        res.json(result.rows);
+    } catch (error) {
+        console.error('Gagal mengambil notifikasi:', error.message);
+        res.status(500).json({ message: 'Notifikasi gagal dimuat.' });
+    }
+});
+
+app.patch('/api/notifications/read-all', authenticateToken, async (req, res) => {
+    try {
+        await ensureNotificationsTable();
+        const result = await pool.query(
+            'UPDATE public.notifications SET read_at = NOW() WHERE recipient_user_id = $1 AND read_at IS NULL',
+            [req.userId]
+        );
+        res.json({ updated_count: result.rowCount });
+    } catch (error) {
+        console.error('Gagal menandai notifikasi:', error.message);
+        res.status(500).json({ message: 'Notifikasi gagal diperbarui.' });
+    }
+});
+
+app.patch('/api/notifications/:id/read', authenticateToken, async (req, res) => {
+    try {
+        await ensureNotificationsTable();
+        const result = await pool.query(
+            'UPDATE public.notifications SET read_at = COALESCE(read_at, NOW()) WHERE id = $1 AND recipient_user_id = $2 RETURNING id, read_at',
+            [req.params.id, req.userId]
+        );
+        if (result.rows.length === 0) {
+            return res.status(404).json({ message: 'Notifikasi tidak ditemukan.' });
+        }
+        res.json(result.rows[0]);
+    } catch (error) {
+        console.error('Gagal menandai notifikasi:', error.message);
+        res.status(500).json({ message: 'Notifikasi gagal diperbarui.' });
+    }
+});
+
 app.get('/api/posts', async (req, res) => {
     try {
         const { search, category, user_id } = req.query;
@@ -528,16 +696,26 @@ app.get('/api/posts/:id/likes', async (req, res) => {
 
 app.post('/api/posts/:id/like', authenticateToken, async (req, res) => {
     try {
-        const existingLike = await pool.query(
-            'SELECT 1 FROM public.post_likes WHERE post_id = $1 AND user_id = $2 LIMIT 1',
+        const postResult = await pool.query(
+            'SELECT user_id FROM public.posts WHERE id = $1',
+            [req.params.id]
+        );
+        if (postResult.rows.length === 0) {
+            return res.status(404).json({ message: 'Postingan tidak ditemukan.' });
+        }
+
+        const insertedLike = await pool.query(
+            'INSERT INTO public.post_likes (post_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING id',
             [req.params.id, req.userId]
         );
 
-        if (existingLike.rows.length === 0) {
-            await pool.query(
-                'INSERT INTO public.post_likes (post_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-                [req.params.id, req.userId]
-            );
+        if (insertedLike.rows.length > 0) {
+            await createActivityNotification({
+                recipientUserId: postResult.rows[0].user_id,
+                actorUserId: req.userId,
+                postId: req.params.id,
+                type: 'like'
+            });
         }
 
         const countRes = await pool.query(
@@ -580,15 +758,33 @@ app.post('/api/posts/:id/comments', authenticateToken, async (req, res) => {
             return res.status(400).json({ message: 'Komentar tidak boleh kosong.' });
         }
 
+        const postResult = await pool.query(
+            'SELECT user_id FROM public.posts WHERE id = $1',
+            [req.params.id]
+        );
+        if (postResult.rows.length === 0) {
+            return res.status(404).json({ message: 'Postingan tidak ditemukan.' });
+        }
+
         const insertRes = await pool.query(
-            `INSERT INTO public.post_comments (post_id, user_id, comment_text) VALUES ($1, $2, $3) RETURNING id`,
+            'INSERT INTO public.post_comments (post_id, user_id, comment_text) VALUES ($1, $2, $3) RETURNING id',
             [req.params.id, req.userId, comment_text.trim()]
         );
         const newComment = await pool.query(
-            `SELECT c.id, c.comment_text, c.created_at, u.id AS user_id, u.full_name, u.profile_photo_url 
-             FROM public.post_comments c JOIN public.users u ON c.user_id = u.id WHERE c.id = $1`,
+            `SELECT c.id, c.comment_text, c.created_at, u.id AS user_id, u.full_name, u.profile_photo_url
+             FROM public.post_comments c
+             JOIN public.users u ON c.user_id = u.id
+             WHERE c.id = $1`,
             [insertRes.rows[0].id]
         );
+
+        await createActivityNotification({
+            recipientUserId: postResult.rows[0].user_id,
+            actorUserId: req.userId,
+            postId: req.params.id,
+            type: 'comment'
+        });
+
         res.status(201).json(newComment.rows[0]);
     } catch (error) {
         res.status(500).json({ message: 'Gagal kirim komentar', error: error.message });
