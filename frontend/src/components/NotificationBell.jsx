@@ -31,7 +31,11 @@ export default function NotificationBell() {
     if (!currentUser || !token) return undefined;
 
     const intervalId = window.setInterval(fetchUnreadCount, 30000);
-    return () => window.clearInterval(intervalId);
+    window.addEventListener('notifications:refresh', fetchUnreadCount);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('notifications:refresh', fetchUnreadCount);
+    };
   }, [fetchUnreadCount, currentUser, token]);
 
   if (!currentUser) return null;
