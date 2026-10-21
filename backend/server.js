@@ -121,6 +121,7 @@ function processVideoUpload(jobId) {
     const masterPlaylistPath = path.join(outputFolder, 'master.m3u8');
 
     job.stage = 'thumbnail';
+    job.message = 'Menyiapkan pratinjau video.';
     job.progress = 2;
 
     (async () => {
@@ -130,6 +131,7 @@ function processVideoUpload(jobId) {
             const hasThumbnail = await createVideoThumbnail(filePath, thumbnailFilename, thumbnailPath);
             job.thumbnail_url = hasThumbnail ? baseUrl + '/uploads/' + thumbnailFilename : null;
             job.stage = 'conversion';
+            job.message = 'Mengonversi video.';
             job.progress = 5;
 
             const r1080p = path.join(outputFolder, '1080p');
@@ -140,7 +142,7 @@ function processVideoUpload(jobId) {
             fs.mkdirSync(r480p, { recursive: true });
 
             await new Promise((resolve, reject) => {
-                ffmpeg(filePath)
+                const command = ffmpeg(filePath)
                     .output(r1080p + '/index.m3u8')
                     .videoCodec('libx264')
                     .size('1920x1080')
@@ -163,16 +165,27 @@ function processVideoUpload(jobId) {
                     .videoBitrate('1400k')
                     .audioCodec('aac')
                     .audioBitrate('96k')
-                    .outputOptions(['-preset veryfast', '-hls_time 10', '-hls_list_size 0', '-f hls'])
+                    .outputOptions(['-preset veryfast', '-hls_time 10', '-hls_list_size 0', '-f hls']);
 
+                const timeout = setTimeout(() => {
+                    command.kill('SIGKILL');
+                }, 45 * 60 * 1000);
+
+                command
                     .on('progress', (progress) => {
                         const percent = Number(progress.percent);
                         if (Number.isFinite(percent)) {
                             job.progress = Math.max(5, Math.min(98, Math.round(5 + percent * 0.93)));
                         }
                     })
-                    .on('end', resolve)
-                    .on('error', reject)
+                    .on('end', () => {
+                        clearTimeout(timeout);
+                        resolve();
+                    })
+                    .on('error', (error) => {
+                        clearTimeout(timeout);
+                        reject(error);
+                    })
                     .run();
             });
 
