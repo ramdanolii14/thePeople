@@ -1,6 +1,6 @@
-// File: frontend/src/pages/IndexPage.jsx
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
+import { ArrowRight, Plus } from 'lucide-react';
 import { API_BASE_URL } from '../api/config';
 import { useAuth } from '../context/AuthContext';
 import GoogleAvatar from '../components/GoogleAvatar';
@@ -9,161 +9,139 @@ import PostThumbnail from '../components/PostThumbnail';
 
 export default function IndexPage() {
   const { currentUser } = useAuth();
-  const [stats, setStats] = useState({ total_users: 0, total_posts: 0 });
   const [recentPosts, setRecentPosts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [selectedPost, setSelectedPost] = useState(null);
 
   useEffect(() => {
+    let active = true;
+
     const loadIndexData = async () => {
       setLoading(true);
       setError('');
       try {
-        const [statsRes, postsRes] = await Promise.all([
-          fetch(`${API_BASE_URL}/stats`),
-          fetch(`${API_BASE_URL}/posts`)
-        ]);
-
-        if (!statsRes.ok || !postsRes.ok) {
-          throw new Error('Gagal mengambil data dari server PostgreSQL');
+        const postsRes = await fetch(API_BASE_URL + '/posts');
+        if (!postsRes.ok) {
+          throw new Error('Postingan gagal dimuat. Pastikan server backend berjalan.');
         }
 
-        const statsData = await statsRes.json();
         const postsData = await postsRes.json();
-
-        setStats(statsData);
-        setRecentPosts(postsData.slice(0, 4));
+        if (active) setRecentPosts(Array.isArray(postsData) ? postsData.slice(0, 4) : []);
       } catch (err) {
-        setError(err.message);
+        if (active) setError(err.message || 'Postingan gagal dimuat.');
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     };
 
     loadIndexData();
+    return () => {
+      active = false;
+    };
   }, []);
 
   return (
     <div className="space-y-8">
       {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
-          Tidak dapat terhubung ke REST API ({error}). Pastikan server backend sudah dijalankan.
+        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {error}
         </div>
       )}
 
-      <div className="bg-gradient-to-r from-[#1877F2] to-indigo-700 rounded-2xl p-8 md:p-12 text-white shadow-md flex flex-col md:flex-row items-center justify-between gap-8">
-        <div className="max-w-2xl space-y-4">
-          <span className="inline-block bg-white/20 text-xs font-semibold px-3 py-1 rounded-full">
-            Halaman Index &bull; PostgreSQL Database
-          </span>
-          <h1 className="text-3xl md:text-5xl font-extrabold leading-tight">
-            Posting Foto Seperti Facebook, Tersusun Rapi Seperti Marketplace.
-          </h1>
-          <p className="text-blue-100 text-sm md:text-base leading-relaxed">
-            Setiap foto, judul, dan deskripsi yang kamu bagikan tersimpan langsung di PostgreSQL Supabase dan ditampilkan dalam tata letak grid katalog.
+      <header className="flex flex-col justify-between gap-4 border-b border-gray-200 pb-5 sm:flex-row sm:items-end">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-gray-900">Beranda</h1>
+          <p className="mt-1.5 text-sm text-gray-500">
+            Postingan terbaru dari komunitas.
           </p>
-          <div className="pt-2 flex flex-wrap gap-3">
-            <Link
-              to="/feed"
-              className="bg-white text-[#1877F2] hover:bg-blue-50 font-bold px-6 py-3 rounded-xl shadow-xs transition"
-            >
-              Jelajahi Feed Marketplace
-            </Link>
-            <Link
-              to={currentUser ? '/add-post' : '/auth'}
-              className="bg-blue-900/50 hover:bg-blue-900 text-white font-semibold px-6 py-3 rounded-xl border border-white/20 transition"
-            >
-              {currentUser ? '+ Tambah Postingan Foto' : 'Login / Register'}
-            </Link>
-          </div>
         </div>
-
-        <div className="w-full md:w-72 bg-white/10 border border-white/20 rounded-2xl p-6 space-y-4">
-          <p className="text-xs uppercase font-bold tracking-wider text-blue-100">
-            Data Real-Time Database
-          </p>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="bg-white/10 p-4 rounded-xl">
-              <p className="text-3xl font-extrabold">{stats.total_posts}</p>
-              <p className="text-xs text-blue-100 mt-1">Total Foto</p>
-            </div>
-            <div className="bg-white/10 p-4 rounded-xl">
-              <p className="text-3xl font-extrabold">{stats.total_users}</p>
-              <p className="text-xs text-blue-100 mt-1">Total User</p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-bold text-gray-900">
-            Postingan Foto Terbaru
-          </h2>
+        <div className="flex flex-wrap items-center gap-2">
           <Link
             to="/feed"
-            className="text-sm font-semibold text-[#1877F2] hover:underline"
+            className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
           >
-            Lihat Semua di Feed &rarr;
+            Lihat feed
+            <ArrowRight className="h-4 w-4" aria-hidden="true" />
           </Link>
+          <Link
+            to={currentUser ? '/add-post' : '/auth'}
+            className="inline-flex items-center gap-2 rounded-lg bg-[#1877F2] px-3.5 py-2.5 text-sm font-medium text-white transition hover:bg-blue-700"
+          >
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            Buat postingan
+          </Link>
+        </div>
+      </header>
+
+      <section>
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900">Postingan terbaru</h2>
+            {!loading && (
+              <p className="mt-1 text-xs text-gray-500">
+                {recentPosts.length} postingan ditampilkan
+              </p>
+            )}
+          </div>
         </div>
 
         {loading ? (
-          <div className="bg-white rounded-xl p-12 text-center border border-gray-200 text-gray-500 text-sm">
-            Memuat data dari PostgreSQL...
+          <div className="rounded-xl border border-gray-200 bg-white px-5 py-12 text-center text-sm text-gray-500">
+            Memuat postingan...
           </div>
         ) : recentPosts.length === 0 ? (
-          <div className="bg-white rounded-xl p-12 text-center border border-gray-200 space-y-3">
-            <p className="text-gray-800 font-bold">
-              Belum ada postingan di database.
-            </p>
-            <p className="text-gray-500 text-xs">
-              Jadilah yang pertama mengunggah foto ke katalog Marketplace ini!
+          <div className="rounded-xl border border-gray-200 bg-white px-5 py-14 text-center">
+            <p className="text-sm font-medium text-gray-800">Belum ada postingan.</p>
+            <p className="mt-1.5 text-sm text-gray-500">
+              Postingan yang dibagikan akan muncul di sini.
             </p>
             <Link
               to={currentUser ? '/add-post' : '/auth'}
-              className="inline-block bg-[#1877F2] text-white text-xs font-bold px-5 py-2.5 rounded-lg"
+              className="mt-4 inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3.5 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
             >
-              {currentUser ? '+ Buat Postingan Pertama' : 'Login / Register'}
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              Buat postingan pertama
             </Link>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
             {recentPosts.map((post) => (
-              <div
+              <button
+                type="button"
                 key={post.id}
                 onClick={() => setSelectedPost(post)}
-                className="bg-white rounded-xl overflow-hidden shadow-xs border border-gray-200 hover:shadow-md transition cursor-pointer flex flex-col"
+                className="group flex min-w-0 flex-col overflow-hidden rounded-xl border border-gray-200 bg-white text-left transition hover:border-gray-300 hover:shadow-sm"
               >
-                <div className="aspect-square bg-gray-100 overflow-hidden">
-                  <PostThumbnail post={post} className="h-full w-full object-cover" />
+                <div className="aspect-square w-full overflow-hidden bg-gray-100">
+                  <PostThumbnail
+                    post={post}
+                    className="h-full w-full object-cover transition duration-200 group-hover:scale-[1.02]"
+                  />
                 </div>
-                <div className="p-3.5 flex-1 flex flex-col justify-between">
-                  <div>
-                    <h3 className="font-bold text-gray-900 text-sm line-clamp-1">
-                      {post.title}
-                    </h3>
-                    <p className="text-xs text-gray-500 mt-1 line-clamp-2">
-                      {post.description}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2 mt-3 pt-2.5 border-t border-gray-100">
+                <div className="flex w-full flex-1 flex-col p-3.5">
+                  <h3 className="line-clamp-1 text-sm font-semibold text-gray-900">
+                    {post.title}
+                  </h3>
+                  <p className="mt-1 line-clamp-2 text-xs leading-5 text-gray-500">
+                    {post.description}
+                  </p>
+                  <div className="mt-3 flex min-w-0 items-center gap-2 border-t border-gray-100 pt-3">
                     <GoogleAvatar
-                      name={post.author_name}
+                      name={post.author_name || post.full_name}
                       src={post.profile_photo_url}
                       size="sm"
                     />
-                    <span className="text-xs font-medium text-gray-700 truncate">
-                      {post.author_name}
+                    <span className="min-w-0 truncate text-xs font-medium text-gray-600">
+                      {post.author_name || post.full_name}
                     </span>
                   </div>
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         )}
-      </div>
+      </section>
 
       <PostModal post={selectedPost} onClose={() => setSelectedPost(null)} />
     </div>
