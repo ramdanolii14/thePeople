@@ -5,16 +5,23 @@ import { API_BASE_URL, CATEGORIES } from '../api/config';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 
-function uploadWithProgress(formData, token, onProgress) {
+function uploadWithProgress(formData, token, onProgress, onPhase, isVideo) {
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
     request.open('POST', API_BASE_URL + '/upload');
+    request.timeout = 60 * 60 * 1000;
     request.setRequestHeader('Authorization', 'Bearer ' + token);
 
     request.upload.addEventListener('progress', (event) => {
       if (event.lengthComputable) {
         onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
       }
+    });
+
+    request.upload.addEventListener('load', () => {
+      onPhase(isVideo ? 'processing' : 'saving');
+      if (isVideo) onProgress(0);
+      else onProgress(100);
     });
 
     request.addEventListener('load', () => {
@@ -35,10 +42,48 @@ function uploadWithProgress(formData, token, onProgress) {
 
     request.addEventListener('error', () => reject(new Error('Koneksi terputus saat mengunggah.')));
     request.addEventListener('abort', () => reject(new Error('Upload dibatalkan.')));
+    request.addEventListener('timeout', () => reject(new Error('Upload melewati batas waktu. Coba unggah video yang lebih kecil atau periksa server.')));
     request.send(formData);
   });
 }
 
+async function pollVideoUpload(jobId, token, onProgress, onPhase) {
+  const startedAt = Date.now();
+  const maxWaitMs = 60 * 60 * 1000;
+
+  while (Date.now() - startedAt < maxWaitMs) {
+    const response = await fetch(
+      API_BASE_URL + '/upload/' + encodeURIComponent(jobId) + '/status',
+      { headers: { Authorization: 'Bearer ' + token } }
+    );
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.message || 'Status pemrosesan video tidak dapat diperiksa.');
+    }
+
+    onPhase(data.stage === 'thumbnail' ? 'thumbnail' : 'processing');
+    if (Number.isFinite(Number(data.progress))) {
+      onProgress(Math.max(0, Math.min(100, Number(data.progress))));
+    }
+
+    if (data.status === 'completed') {
+      onProgress(100);
+      return {
+        ...data,
+        media_type: 'video'
+      };
+    }
+
+    if (data.status === 'failed') {
+      throw new Error(data.message || 'Pemrosesan video gagal.');
+    }
+
+    await new Promise((resolve) => window.setTimeout(resolve, 1500));
+  }
+
+  throw new Error('Pemrosesan video terlalu lama. Periksa log backend sebelum mencoba kembali.');
+}
 export default function AddPostPage() {
   const { currentUser, token } = useAuth();
   const { showToast } = useToast();
@@ -57,6 +102,7 @@ export default function AddPostPage() {
   const [previewUrl, setPreviewUrl] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadPhase, setUploadPhase] = useState('uploading');
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -86,6 +132,7 @@ export default function AddPostPage() {
     setMediaType(file.type.startsWith('video/') ? 'video' : 'image');
     setForm((previous) => ({ ...previous, photo_url: '', thumbnail_url: '' }));
     setUploadProgress(0);
+    setUploadPhase('uploading');
     setError('');
   };
 
@@ -100,6 +147,7 @@ export default function AddPostPage() {
     setPreviewUrl(value);
     setMediaType(/\.(mp4|mov|m4v|webm|m3u8)(?:$|\?)/i.test(value) ? 'video' : 'image');
     setUploadProgress(0);
+    setUploadPhase('uploading');
   };
 
   const handleSubmit = async (event) => {
@@ -107,6 +155,7 @@ export default function AddPostPage() {
     if (submitting) return;
     setSubmitting(true);
     setUploadProgress(0);
+    setUploadPhase(selectedFile ? 'uploading' : 'saving');
     setError('');
 
     try {
@@ -116,7 +165,23 @@ export default function AddPostPage() {
       if (selectedFile) {
         const formData = new FormData();
         formData.append('media', selectedFile);
-        const uploadData = await uploadWithProgress(formData, token, setUploadProgress);
+        let uploadData = await uploadWithProgress(
+          formData,
+          token,
+          setUploadProgress,
+          setUploadPhase,
+          selectedFile.type.startsWith('video/')
+        );
+
+        if (uploadData.job_id) {
+          uploadData = await pollVideoUpload(
+            uploadData.job_id,
+            token,
+            setUploadProgress,
+            setUploadPhase
+          );
+        }
+
         finalMediaUrl = uploadData.media_url;
         finalThumbnailUrl = uploadData.thumbnail_url || uploadData.media_url;
       }
@@ -267,12 +332,20 @@ export default function AddPostPage() {
           {submitting && selectedFile && (
             <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50 p-3.5">
               <div className="flex items-center justify-between text-xs font-medium text-gray-600">
-                <span>Mengupload</span>
+                <span>
+                  {uploadPhase === 'thumbnail'
+                    ? 'Menyiapkan pratinjau'
+                    : uploadPhase === 'processing'
+                      ? 'Memproses video'
+                      : uploadPhase === 'saving'
+                        ? 'Menyimpan postingan'
+                        : 'Mengupload'}
+                </span>
                 <span>{uploadProgress}%</span>
               </div>
               <div
                 role="progressbar"
-                aria-label="Kemajuan upload"
+                aria-label={uploadPhase === 'processing' || uploadPhase === 'thumbnail' ? 'Kemajuan pemrosesan video' : 'Kemajuan upload'}
                 aria-valuemin={0}
                 aria-valuemax={100}
                 aria-valuenow={uploadProgress}
