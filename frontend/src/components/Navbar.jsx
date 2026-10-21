@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import GoogleAvatar from './GoogleAvatar';
+import NotificationBell from './NotificationBell';
 
 export default function Navbar() {
   const { currentUser, logout } = useAuth();
@@ -70,6 +71,7 @@ export default function Navbar() {
         <div className="flex shrink-0 items-center gap-2">
           {currentUser ? (
             <>
+              <NotificationBell />
               <Link
                 to={'/user/' + currentUser.id}
                 className="flex items-center gap-2 rounded-full p-1.5 transition hover:bg-gray-50"
