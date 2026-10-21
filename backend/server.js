@@ -112,6 +112,41 @@ async function createVideoThumbnail(filePath, thumbnailFilename, thumbnailPath) 
     return fs.existsSync(thumbnailPath);
 }
 
+function probeVideoDimensions(filePath) {
+    return new Promise((resolve, reject) => {
+        ffmpeg.ffprobe(filePath, (error, metadata) => {
+            if (error) return reject(error);
+
+            const videoStream = (metadata.streams || []).find((stream) => stream.codec_type === 'video');
+            if (!videoStream || !Number(videoStream.width) || !Number(videoStream.height)) {
+                return reject(new Error('Dimensi video tidak dapat dibaca.'));
+            }
+
+            let width = Number(videoStream.width);
+            let height = Number(videoStream.height);
+            const sideRotation = (videoStream.side_data_list || []).find(
+                (item) => Number.isFinite(Number(item.rotation))
+            )?.rotation;
+            const rotation = Number(videoStream.tags?.rotate ?? sideRotation ?? 0);
+
+            // FFmpeg otomatis merotasi video saat transcode, jadi samakan
+            // dimensi target dengan orientasi tampilnya.
+            if (Number.isFinite(rotation) && Math.abs(Math.round(rotation)) % 180 === 90) {
+                [width, height] = [height, width];
+            }
+
+            resolve({ width, height });
+        });
+    });
+}
+
+function scaleVideoDimensions(sourceWidth, sourceHeight, maxWidth, maxHeight) {
+    const scale = Math.min(maxWidth / sourceWidth, maxHeight / sourceHeight);
+    const width = Math.max(2, Math.floor((sourceWidth * scale) / 2) * 2);
+    const height = Math.max(2, Math.floor((sourceHeight * scale) / 2) * 2);
+    return { width, height };
+}
+
 function processVideoUpload(jobId) {
     const job = uploadJobs.get(jobId);
     if (!job) return;
@@ -134,38 +169,65 @@ function processVideoUpload(jobId) {
             job.message = 'Mengonversi video.';
             job.progress = 5;
 
-            const r1080p = path.join(outputFolder, '1080p');
-            const r720p = path.join(outputFolder, '720p');
-            const r480p = path.join(outputFolder, '480p');
-            fs.mkdirSync(r1080p, { recursive: true });
-            fs.mkdirSync(r720p, { recursive: true });
-            fs.mkdirSync(r480p, { recursive: true });
+            const sourceDimensions = await probeVideoDimensions(filePath);
+            const isPortrait = sourceDimensions.height > sourceDimensions.width;
+
+            const profiles = [
+                {
+                    name: '1080p',
+                    folder: path.join(outputFolder, '1080p'),
+                    maxWidth: isPortrait ? 1080 : 1920,
+                    maxHeight: isPortrait ? 1920 : 1080,
+                    videoBitrate: '5000k',
+                    audioBitrate: '192k',
+                    bandwidth: 5500000
+                },
+                {
+                    name: '720p',
+                    folder: path.join(outputFolder, '720p'),
+                    maxWidth: isPortrait ? 720 : 1280,
+                    maxHeight: isPortrait ? 1280 : 720,
+                    videoBitrate: '2800k',
+                    audioBitrate: '128k',
+                    bandwidth: 3000000
+                },
+                {
+                    name: '480p',
+                    folder: path.join(outputFolder, '480p'),
+                    maxWidth: isPortrait ? 480 : 854,
+                    maxHeight: isPortrait ? 854 : 480,
+                    videoBitrate: '1400k',
+                    audioBitrate: '96k',
+                    bandwidth: 1500000
+                }
+            ];
+
+            profiles.forEach((profile) => {
+                const dimensions = scaleVideoDimensions(
+                    sourceDimensions.width,
+                    sourceDimensions.height,
+                    profile.maxWidth,
+                    profile.maxHeight
+                );
+                profile.width = dimensions.width;
+                profile.height = dimensions.height;
+                fs.mkdirSync(profile.folder, { recursive: true });
+            });
 
             await new Promise((resolve, reject) => {
-                const command = ffmpeg(filePath)
-                    .output(r1080p + '/index.m3u8')
-                    .videoCodec('libx264')
-                    .size('1920x1080')
-                    .videoBitrate('5000k')
-                    .audioCodec('aac')
-                    .audioBitrate('192k')
-                    .outputOptions(['-preset veryfast', '-hls_time 10', '-hls_list_size 0', '-f hls'])
+                const command = ffmpeg(filePath);
 
-                    .output(r720p + '/index.m3u8')
-                    .videoCodec('libx264')
-                    .size('1280x720')
-                    .videoBitrate('2800k')
-                    .audioCodec('aac')
-                    .audioBitrate('128k')
-                    .outputOptions(['-preset veryfast', '-hls_time 10', '-hls_list_size 0', '-f hls'])
-
-                    .output(r480p + '/index.m3u8')
-                    .videoCodec('libx264')
-                    .size('854x480')
-                    .videoBitrate('1400k')
-                    .audioCodec('aac')
-                    .audioBitrate('96k')
-                    .outputOptions(['-preset veryfast', '-hls_time 10', '-hls_list_size 0', '-f hls']);
+                profiles.forEach((profile) => {
+                    command
+                        .output(path.join(profile.folder, 'index.m3u8'))
+                        .videoCodec('libx264')
+                        .size(profile.width + 'x' + profile.height)
+                        .autopad()
+                        .videoBitrate(profile.videoBitrate)
+                        .audioCodec('aac')
+                        .audioBitrate(profile.audioBitrate)
+                        .outputOptions(['-preset veryfast', '-hls_time 10', '-hls_list_size 0', '-f hls']);
+                });
 
                 const timeout = setTimeout(() => {
                     command.kill('SIGKILL');
@@ -189,17 +251,16 @@ function processVideoUpload(jobId) {
                     .run();
             });
 
-            const masterContent = [
-                '#EXTM3U',
-                '#EXT-X-VERSION:3',
-                '#EXT-X-STREAM-INF:BANDWIDTH=5500000,RESOLUTION=1920x1080',
-                '1080p/index.m3u8',
-                '#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720',
-                '720p/index.m3u8',
-                '#EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=854x480',
-                '480p/index.m3u8',
-                ''
-            ].join('\n');
+            const masterLines = ['#EXTM3U', '#EXT-X-VERSION:3'];
+            profiles.forEach((profile) => {
+                masterLines.push(
+                    '#EXT-X-STREAM-INF:BANDWIDTH=' + profile.bandwidth +
+                    ',RESOLUTION=' + profile.width + 'x' + profile.height
+                );
+                masterLines.push(profile.name + '/index.m3u8');
+            });
+            masterLines.push('');
+            const masterContent = masterLines.join('\n');
             fs.writeFileSync(masterPlaylistPath, masterContent, 'utf8');
             removeFileIfExists(filePath);
 
