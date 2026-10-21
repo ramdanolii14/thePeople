@@ -104,11 +104,19 @@ export default function HlsVideoPlayer({ src, className = '' }) {
             className="cursor-pointer rounded border border-white/30 bg-black/90 px-2 py-1 text-xs font-medium text-white focus:outline-none focus:ring-2 focus:ring-white/60"
           >
             <option value={-1}>Auto</option>
-            {levels.map((level, index) => (
-              <option key={index} value={index}>
-                {level.height ? level.height + 'p' : 'Tingkat ' + (index + 1)}
-              </option>
-            ))}
+            {levels.map((level, index) => {
+              const shorterEdge = Math.min(Number(level.width) || 0, Number(level.height) || 0);
+              const label = level.name || (shorterEdge >= 2160
+                ? '4K (2160p)'
+                : shorterEdge > 0
+                  ? shorterEdge + 'p'
+                  : 'Tingkat ' + (index + 1));
+              return (
+                <option key={index} value={index}>
+                  {label}
+                </option>
+              );
+            })}
           </select>
         </div>
       )}
