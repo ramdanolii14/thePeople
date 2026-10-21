@@ -141,7 +141,7 @@ function probeVideoDimensions(filePath) {
 }
 
 function scaleVideoDimensions(sourceWidth, sourceHeight, maxWidth, maxHeight) {
-    const scale = Math.min(maxWidth / sourceWidth, maxHeight / sourceHeight);
+    const scale = Math.min(1, maxWidth / sourceWidth, maxHeight / sourceHeight);
     const width = Math.max(2, Math.floor((sourceWidth * scale) / 2) * 2);
     const height = Math.max(2, Math.floor((sourceHeight * scale) / 2) * 2);
     return { width, height };
@@ -172,35 +172,37 @@ function processVideoUpload(jobId) {
             const sourceDimensions = await probeVideoDimensions(filePath);
             const isPortrait = sourceDimensions.height > sourceDimensions.width;
 
-            const profiles = [
-                {
-                    name: '1080p',
-                    folder: path.join(outputFolder, '1080p'),
-                    maxWidth: isPortrait ? 1080 : 1920,
-                    maxHeight: isPortrait ? 1920 : 1080,
-                    videoBitrate: '5000k',
-                    audioBitrate: '192k',
-                    bandwidth: 5500000
-                },
-                {
-                    name: '720p',
-                    folder: path.join(outputFolder, '720p'),
-                    maxWidth: isPortrait ? 720 : 1280,
-                    maxHeight: isPortrait ? 1280 : 720,
-                    videoBitrate: '2800k',
-                    audioBitrate: '128k',
-                    bandwidth: 3000000
-                },
-                {
-                    name: '480p',
-                    folder: path.join(outputFolder, '480p'),
-                    maxWidth: isPortrait ? 480 : 854,
-                    maxHeight: isPortrait ? 854 : 480,
-                    videoBitrate: '1400k',
-                    audioBitrate: '96k',
-                    bandwidth: 1500000
-                }
+            const requestedResolutions = [
+                { resolution: 144, videoBitrate: '160k', audioBitrate: '48k', bandwidth: 220000 },
+                { resolution: 240, videoBitrate: '350k', audioBitrate: '64k', bandwidth: 450000 },
+                { resolution: 360, videoBitrate: '700k', audioBitrate: '96k', bandwidth: 850000 },
+                { resolution: 480, videoBitrate: '1400k', audioBitrate: '96k', bandwidth: 1600000 },
+                { resolution: 720, videoBitrate: '2800k', audioBitrate: '128k', bandwidth: 3200000 },
+                { resolution: 1080, videoBitrate: '5000k', audioBitrate: '192k', bandwidth: 5600000 },
+                { resolution: 1440, videoBitrate: '9000k', audioBitrate: '192k', bandwidth: 10000000 },
+                { resolution: 2160, videoBitrate: '18000k', audioBitrate: '256k', bandwidth: 20000000 }
             ];
+
+            // Resolution "p" refers to the shorter video dimension. This supports
+            // both landscape and portrait while excluding variants above source
+            // resolution. A final scale cap also ensures FFmpeg never upscales.
+            const sourceShortEdge = Math.min(sourceDimensions.width, sourceDimensions.height);
+            const profiles = requestedResolutions
+                .filter((profile) => sourceShortEdge >= profile.resolution)
+                .map((profile) => {
+                    const longEdge = Math.round(profile.resolution * 16 / 9);
+                    return {
+                        ...profile,
+                        name: profile.resolution + 'p',
+                        folder: path.join(outputFolder, profile.resolution + 'p'),
+                        maxWidth: isPortrait ? profile.resolution : longEdge,
+                        maxHeight: isPortrait ? longEdge : profile.resolution
+                    };
+                });
+
+            if (profiles.length === 0) {
+                throw new Error('Resolusi sumber terlalu rendah untuk membuat profil HLS minimal 144p.');
+            }
 
             profiles.forEach((profile) => {
                 const dimensions = scaleVideoDimensions(
@@ -255,7 +257,8 @@ function processVideoUpload(jobId) {
             profiles.forEach((profile) => {
                 masterLines.push(
                     '#EXT-X-STREAM-INF:BANDWIDTH=' + profile.bandwidth +
-                    ',RESOLUTION=' + profile.width + 'x' + profile.height
+                    ',RESOLUTION=' + profile.width + 'x' + profile.height +
+                    ',NAME="' + profile.name + '"'
                 );
                 masterLines.push(profile.name + '/index.m3u8');
             });
