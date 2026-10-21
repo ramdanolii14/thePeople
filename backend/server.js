@@ -506,14 +506,14 @@ async function createActivityNotification({ recipientUserId, actorUserId, postId
             );
 
             const recentNotification = await client.query(
-                \`SELECT 1
+                `SELECT 1
                  FROM public.notifications
                  WHERE recipient_user_id = $1
                    AND actor_user_id = $2
                    AND post_id = $3
                    AND type = 'comment'
                    AND created_at > NOW() - INTERVAL '10 minutes'
-                 LIMIT 1\`,
+                 LIMIT 1`,
                 [recipientUserId, actorUserId, postId]
             );
             if (recentNotification.rows.length > 0) {
@@ -528,10 +528,10 @@ async function createActivityNotification({ recipientUserId, actorUserId, postId
         const dedupeKey = [type, postId, recipientUserId, actorUserId, bucket].join(':');
 
         await client.query(
-            \`INSERT INTO public.notifications
+            `INSERT INTO public.notifications
                 (recipient_user_id, actor_user_id, post_id, type, dedupe_key)
              VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (dedupe_key) DO NOTHING\`,
+             ON CONFLICT (dedupe_key) DO NOTHING`,
             [recipientUserId, actorUserId, postId, type, dedupeKey]
         );
         await client.query('COMMIT');
