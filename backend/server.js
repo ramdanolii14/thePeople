@@ -595,13 +595,171 @@ app.post('/api/posts/:id/comments', authenticateToken, async (req, res) => {
     }
 });
 
-app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
+function getLocalUploadArtifact(mediaUrl, req) {
+    if (typeof mediaUrl !== 'string' || !mediaUrl.trim()) return null;
+
     try {
-        await pool.query('DELETE FROM public.posts WHERE id = $1 AND user_id = $2', [req.params.id, req.userId]);
-        res.json({ message: 'Post dihapus.' });
-    } catch (error) {
-        res.status(500).json({ message: 'Gagal hapus post', error: error.message });
+        const requestOrigin = req.protocol + '://' + req.get('host');
+        const requestUrl = new URL(requestOrigin);
+        const parsed = new URL(mediaUrl, requestOrigin);
+
+        const isLoopback = (hostname) =>
+            hostname === 'localhost' ||
+            hostname === '127.0.0.1' ||
+            hostname === '[::1]' ||
+            hostname === '::1';
+
+        const sameOrigin = parsed.origin === requestUrl.origin;
+        const sameLocalHost = isLoopback(parsed.hostname) &&
+            isLoopback(requestUrl.hostname) &&
+            parsed.protocol === requestUrl.protocol &&
+            parsed.port === requestUrl.port;
+
+        // Never treat an arbitrary external URL as a local file.
+        if (!sameOrigin && !sameLocalHost) return null;
+        if (!parsed.pathname.startsWith('/uploads/')) return null;
+
+        const encodedSegments = parsed.pathname.slice('/uploads/'.length).split('/');
+        const segments = encodedSegments.map((segment) => decodeURIComponent(segment));
+
+        if (segments.some((segment) =>
+            !segment ||
+            segment === '.' ||
+            segment === '..' ||
+            segment.includes('/') ||
+            segment.includes('\\') ||
+            segment.includes('\0')
+        )) {
+            return null;
+        }
+
+        if (
+            segments.length === 3 &&
+            segments[0] === 'hls' &&
+            segments[2] === 'master.m3u8'
+        ) {
+            const artifactPath = path.resolve(HLS_DIR, segments[1]);
+            const relativePath = path.relative(HLS_DIR, artifactPath);
+            if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+                return null;
+            }
+
+            return {
+                key: artifactPath,
+                path: artifactPath,
+                type: 'directory',
+                sourceUrls: [mediaUrl]
+            };
+        }
+
+        // Uploaded images, video originals, and thumbnails are stored directly
+        // in uploads/. Do not delete arbitrary nested directories or HLS chunks.
+        if (segments.length !== 1 || segments[0] === 'hls') return null;
+
+        const artifactPath = path.resolve(UPLOAD_DIR, segments[0]);
+        const relativePath = path.relative(UPLOAD_DIR, artifactPath);
+        if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+            return null;
+        }
+
+        return {
+            key: artifactPath,
+            path: artifactPath,
+            type: 'file',
+            sourceUrls: [mediaUrl]
+        };
+    } catch {
+        return null;
     }
+}
+
+function collectPostUploadArtifacts(post, req) {
+    const artifactsByPath = new Map();
+
+    [post.photo_url, post.thumbnail_url].forEach((mediaUrl) => {
+        const artifact = getLocalUploadArtifact(mediaUrl, req);
+        if (!artifact) return;
+
+        const existing = artifactsByPath.get(artifact.key);
+        if (existing) {
+            if (!existing.sourceUrls.includes(mediaUrl)) existing.sourceUrls.push(mediaUrl);
+            return;
+        }
+        artifactsByPath.set(artifact.key, artifact);
+    });
+
+    return [...artifactsByPath.values()];
+}
+
+app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
+    const client = await pool.connect();
+    let deletedPost = null;
+
+    try {
+        await client.query('BEGIN');
+
+        const postResult = await client.query(
+            'SELECT id, photo_url, thumbnail_url FROM public.posts WHERE id = $1 AND user_id = $2 FOR UPDATE',
+            [req.params.id, req.userId]
+        );
+
+        if (postResult.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ message: 'Postingan tidak ditemukan atau bukan milik Anda.' });
+        }
+
+        deletedPost = postResult.rows[0];
+
+        await client.query(
+            'DELETE FROM public.posts WHERE id = $1 AND user_id = $2',
+            [req.params.id, req.userId]
+        );
+
+        await client.query('COMMIT');
+    } catch (error) {
+        try {
+            await client.query('ROLLBACK');
+        } catch (rollbackError) {
+            console.error('Gagal membatalkan penghapusan postingan:', rollbackError.message);
+        }
+        console.error('Gagal menghapus postingan:', error);
+        return res.status(500).json({ message: 'Gagal menghapus postingan.' });
+    } finally {
+        client.release();
+    }
+
+    const artifacts = collectPostUploadArtifacts(deletedPost, req);
+    const cleanupWarnings = [];
+
+    for (const artifact of artifacts) {
+        try {
+            // The same URL may be shared by another post. Preserve its file
+            // until no remaining post references that URL.
+            const references = await pool.query(
+                'SELECT 1 FROM public.posts WHERE photo_url = ANY($1::text[]) OR thumbnail_url = ANY($1::text[]) LIMIT 1',
+                [artifact.sourceUrls]
+            );
+            if (references.rows.length > 0) continue;
+
+            if (artifact.type === 'directory') {
+                fs.rmSync(artifact.path, { recursive: true, force: true });
+            } else if (fs.existsSync(artifact.path) && fs.statSync(artifact.path).isFile()) {
+                fs.unlinkSync(artifact.path);
+            }
+        } catch (error) {
+            cleanupWarnings.push(path.basename(artifact.path));
+            console.error('Gagal membersihkan file media postingan:', artifact.path, error.message);
+        }
+    }
+
+    if (cleanupWarnings.length > 0) {
+        return res.json({
+            message: 'Postingan dihapus, tetapi sebagian file media gagal dibersihkan.',
+            cleanup_warnings: cleanupWarnings
+        });
+    }
+
+    return res.json({ message: 'Postingan dan file media terkait berhasil dihapus.' });
 });
 
 app.listen(PORT, () => {
