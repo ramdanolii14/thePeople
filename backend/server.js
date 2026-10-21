@@ -457,7 +457,7 @@ let notificationsTableReady = null;
 async function ensureNotificationsTable() {
     if (!notificationsTableReady) {
         notificationsTableReady = (async () => {
-            await pool.query(\`
+            await pool.query(`
                 CREATE TABLE IF NOT EXISTS public.notifications (
                     id BIGSERIAL PRIMARY KEY,
                     recipient_user_id INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
@@ -468,16 +468,16 @@ async function ensureNotificationsTable() {
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     read_at TIMESTAMPTZ
                 )
-            \`);
-            await pool.query(\`
+            `);
+            await pool.query(`
                 CREATE INDEX IF NOT EXISTS notifications_recipient_created_idx
                 ON public.notifications (recipient_user_id, created_at DESC)
-            \`);
-            await pool.query(\`
+            `);
+            await pool.query(`
                 CREATE INDEX IF NOT EXISTS notifications_unread_idx
                 ON public.notifications (recipient_user_id, created_at DESC)
                 WHERE read_at IS NULL
-            \`);
+            `);
         })().catch((error) => {
             notificationsTableReady = null;
             throw error;
@@ -499,10 +499,10 @@ async function createActivityNotification({ recipientUserId, actorUserId, postId
         const dedupeKey = [type, postId, recipientUserId, actorUserId, bucket].join(':');
 
         await pool.query(
-            \`INSERT INTO public.notifications
+            `INSERT INTO public.notifications
                 (recipient_user_id, actor_user_id, post_id, type, dedupe_key)
              VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (dedupe_key) DO NOTHING\`,
+             ON CONFLICT (dedupe_key) DO NOTHING`,
             [recipientUserId, actorUserId, postId, type, dedupeKey]
         );
     } catch (error) {
@@ -529,7 +529,7 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
     try {
         await ensureNotificationsTable();
         const result = await pool.query(
-            \`SELECT n.id, n.type, n.post_id, n.created_at, n.read_at,
+            `SELECT n.id, n.type, n.post_id, n.created_at, n.read_at,
                     n.actor_user_id, u.full_name AS actor_name,
                     u.profile_photo_url AS actor_photo, p.title AS post_title
              FROM public.notifications n
@@ -537,7 +537,7 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
              LEFT JOIN public.posts p ON p.id = n.post_id
              WHERE n.recipient_user_id = $1
              ORDER BY n.created_at DESC
-             LIMIT 50\`,
+             LIMIT 50`,
             [req.userId]
         );
         res.json(result.rows);
@@ -732,10 +732,10 @@ app.post('/api/posts/:id/comments', authenticateToken, async (req, res) => {
             [req.params.id, req.userId, comment_text.trim()]
         );
         const newComment = await pool.query(
-            \`SELECT c.id, c.comment_text, c.created_at, u.id AS user_id, u.full_name, u.profile_photo_url
+            `SELECT c.id, c.comment_text, c.created_at, u.id AS user_id, u.full_name, u.profile_photo_url
              FROM public.post_comments c
              JOIN public.users u ON c.user_id = u.id
-             WHERE c.id = $1\`,
+             WHERE c.id = $1`,
             [insertRes.rows[0].id]
         );
 
