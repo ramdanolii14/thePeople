@@ -490,24 +490,63 @@ async function createActivityNotification({ recipientUserId, actorUserId, postId
     if (!recipientUserId || !actorUserId || !postId ||
         String(recipientUserId) === String(actorUserId)) return;
 
+    let client;
     try {
         await ensureNotificationsTable();
+        client = await pool.connect();
+        await client.query('BEGIN');
 
-        // A like alerts once per actor/post pair for the lifetime of the post.
-        // Comment alerts are grouped to at most one alert per actor/post per 10-minute window.
+        // Serialize comment notification checks for the same actor/post so
+        // concurrent comment requests cannot bypass the cooldown.
+        const scopeKey = [recipientUserId, actorUserId, postId, type].join(':');
+        if (type === 'comment') {
+            await client.query(
+                'SELECT pg_advisory_xact_lock(hashtext($1)::bigint)',
+                ['notification:' + scopeKey]
+            );
+
+            const recentNotification = await client.query(
+                \`SELECT 1
+                 FROM public.notifications
+                 WHERE recipient_user_id = $1
+                   AND actor_user_id = $2
+                   AND post_id = $3
+                   AND type = 'comment'
+                   AND created_at > NOW() - INTERVAL '10 minutes'
+                 LIMIT 1\`,
+                [recipientUserId, actorUserId, postId]
+            );
+            if (recentNotification.rows.length > 0) {
+                await client.query('COMMIT');
+                return;
+            }
+        }
+
+        // A like alerts only once per actor/post pair for the lifetime of that post.
+        // The unique key also makes simultaneous repeated like requests idempotent.
         const bucket = type === 'comment' ? Math.floor(Date.now() / 600000) : 'once';
         const dedupeKey = [type, postId, recipientUserId, actorUserId, bucket].join(':');
 
-        await pool.query(
-            `INSERT INTO public.notifications
+        await client.query(
+            \`INSERT INTO public.notifications
                 (recipient_user_id, actor_user_id, post_id, type, dedupe_key)
              VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (dedupe_key) DO NOTHING`,
+             ON CONFLICT (dedupe_key) DO NOTHING\`,
             [recipientUserId, actorUserId, postId, type, dedupeKey]
         );
+        await client.query('COMMIT');
     } catch (error) {
+        if (client) {
+            try {
+                await client.query('ROLLBACK');
+            } catch (rollbackError) {
+                console.error('Gagal membatalkan pembuatan notifikasi:', rollbackError.message);
+            }
+        }
         // A notification failure must not make the actual like/comment fail.
         console.error('Gagal membuat notifikasi aktivitas:', error.message);
+    } finally {
+        if (client) client.release();
     }
 }
 
