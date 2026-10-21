@@ -5,7 +5,7 @@ import { API_BASE_URL, CATEGORIES } from '../api/config';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 
-function uploadWithProgress(formData, token, onProgress, onPhase) {
+function uploadWithProgress(formData, token, onProgress, onPhase, isVideo) {
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
     request.open('POST', API_BASE_URL + '/upload');
@@ -19,8 +19,9 @@ function uploadWithProgress(formData, token, onProgress, onPhase) {
     });
 
     request.upload.addEventListener('load', () => {
-      onPhase('processing');
-      onProgress(0);
+      onPhase(isVideo ? 'processing' : 'saving');
+      if (isVideo) onProgress(0);
+      else onProgress(100);
     });
 
     request.addEventListener('load', () => {
@@ -168,7 +169,8 @@ export default function AddPostPage() {
           formData,
           token,
           setUploadProgress,
-          setUploadPhase
+          setUploadPhase,
+          selectedFile.type.startsWith('video/')
         );
 
         if (uploadData.job_id) {
