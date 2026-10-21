@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Camera, FileText, UserRound, Plus, Save, LoaderCircle, Pencil, Trash2 } from 'lucide-react';
+import { Camera, FileText, UserRound, Plus, Save, LoaderCircle, Pencil, Trash2, ImagePlus, Upload, X, Link2 } from 'lucide-react';
 import { API_BASE_URL } from '../api/config';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -13,6 +13,9 @@ export default function DashboardPage() {
   const [myPosts, setMyPosts] = useState([]);
   const [loadingPosts, setLoadingPosts] = useState(true);
   const [savingProfile, setSavingProfile] = useState(false);
+  const [avatarFile, setAvatarFile] = useState(null);
+  const [avatarPreview, setAvatarPreview] = useState('');
+  const avatarInputRef = useRef(null);
   const [deletingPostId, setDeletingPostId] = useState(null);
   const [profileForm, setProfileForm] = useState({
     full_name: '',
@@ -28,6 +31,50 @@ export default function DashboardPage() {
       bio: currentUser.bio || ''
     });
   }, [currentUser]);
+
+  useEffect(() => {
+    return () => {
+      if (avatarPreview.startsWith('blob:')) URL.revokeObjectURL(avatarPreview);
+    };
+  }, [avatarPreview]);
+
+  const handleAvatarFileChange = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const acceptedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    if (!acceptedTypes.includes(file.type)) {
+      showToast('Pilih gambar JPG, PNG, WEBP, atau GIF.', 'error');
+      event.target.value = '';
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      showToast('Ukuran foto profil maksimal 10 MB.', 'error');
+      event.target.value = '';
+      return;
+    }
+
+    setAvatarFile(file);
+    setAvatarPreview(URL.createObjectURL(file));
+    setProfileForm((previous) => ({ ...previous, profile_photo_url: '' }));
+  };
+
+  const handleUseInitials = () => {
+    setAvatarFile(null);
+    setAvatarPreview('');
+    setProfileForm((previous) => ({ ...previous, profile_photo_url: '' }));
+    if (avatarInputRef.current) avatarInputRef.current.value = '';
+  };
+
+  const handleProfilePhotoUrlChange = (event) => {
+    setAvatarFile(null);
+    setAvatarPreview('');
+    setProfileForm((previous) => ({
+      ...previous,
+      profile_photo_url: event.target.value
+    }));
+    if (avatarInputRef.current) avatarInputRef.current.value = '';
+  };
 
   const fetchMyPosts = useCallback(async () => {
     if (!currentUser) {
@@ -57,18 +104,52 @@ export default function DashboardPage() {
     if (savingProfile) return;
     setSavingProfile(true);
     try {
+      let profilePhotoUrl = profileForm.profile_photo_url;
+
+      if (avatarFile) {
+        const uploadForm = new FormData();
+        uploadForm.append('media', avatarFile);
+
+        const uploadRes = await fetch(API_BASE_URL + '/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + token },
+          body: uploadForm
+        });
+        const uploadData = await uploadRes.json();
+        if (!uploadRes.ok) {
+          throw new Error(uploadData.message || 'Foto profil gagal diunggah.');
+        }
+        if (uploadData.media_type !== 'image' || !uploadData.media_url) {
+          throw new Error('Server tidak mengembalikan file gambar yang valid.');
+        }
+        profilePhotoUrl = uploadData.media_url;
+      }
+
+      const updatedForm = {
+        ...profileForm,
+        profile_photo_url: profilePhotoUrl || ''
+      };
       const res = await fetch(API_BASE_URL + '/users/profile', {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           Authorization: 'Bearer ' + token
         },
-        body: JSON.stringify(profileForm)
+        body: JSON.stringify(updatedForm)
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || 'Profil gagal diperbarui.');
+
       setCurrentUser(data.user);
-      showToast('Profil berhasil diperbarui.', 'success');
+      setProfileForm({
+        full_name: data.user.full_name || '',
+        profile_photo_url: data.user.profile_photo_url || '',
+        bio: data.user.bio || ''
+      });
+      setAvatarFile(null);
+      setAvatarPreview('');
+      if (avatarInputRef.current) avatarInputRef.current.value = '';
+      showToast(avatarFile ? 'Profil dan foto avatar berhasil disimpan.' : 'Profil berhasil diperbarui.', 'success');
     } catch (err) {
       showToast(err.message || 'Profil gagal diperbarui.', 'error');
     } finally {
@@ -170,7 +251,7 @@ export default function DashboardPage() {
           <div className="mb-5 flex items-center gap-3">
             <GoogleAvatar
               name={profileForm.full_name}
-              src={profileForm.profile_photo_url}
+              src={avatarPreview || profileForm.profile_photo_url}
               size="lg"
             />
             <div className="min-w-0">
@@ -193,22 +274,68 @@ export default function DashboardPage() {
             </div>
 
             <div>
-              <label htmlFor="profile-photo" className="mb-1.5 block text-sm font-medium text-gray-700">URL foto profil</label>
-              <input
-                id="profile-photo"
-                type="url"
-                placeholder="https://..."
-                value={profileForm.profile_photo_url}
-                onChange={(event) => setProfileForm({ ...profileForm, profile_photo_url: event.target.value })}
-                className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-              />
-              <button
-                type="button"
-                onClick={() => setProfileForm({ ...profileForm, profile_photo_url: '' })}
-                className="mt-1.5 text-xs font-medium text-gray-500 underline decoration-gray-300 underline-offset-2 hover:text-gray-800"
-              >
-                Gunakan avatar inisial
-              </button>
+              <label className="mb-2 block text-sm font-medium text-gray-700">Foto profil</label>
+              <div className="flex items-center gap-4 rounded-xl border border-gray-200 bg-gray-50 p-3">
+                <GoogleAvatar
+                  name={profileForm.full_name}
+                  src={avatarPreview || profileForm.profile_photo_url}
+                  size="xl"
+                  className="border-2 border-white shadow-sm"
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-gray-800">
+                    {avatarFile ? avatarFile.name : (profileForm.profile_photo_url ? 'Foto profil kustom' : 'Avatar inisial')}
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-gray-500">JPG, PNG, WEBP, atau GIF. Maksimal 10 MB.</p>
+                  <input
+                    ref={avatarInputRef}
+                    id="profile-avatar-file"
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/gif"
+                    onChange={handleAvatarFileChange}
+                    disabled={savingProfile}
+                    className="sr-only"
+                  />
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <label
+                      htmlFor="profile-avatar-file"
+                      className={'inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 transition hover:bg-gray-100 ' + (savingProfile ? 'pointer-events-none opacity-50' : '')}
+                    >
+                      <ImagePlus className="h-3.5 w-3.5" aria-hidden="true" />
+                      {avatarFile || profileForm.profile_photo_url ? 'Ganti foto' : 'Unggah foto'}
+                    </label>
+                    {(avatarFile || profileForm.profile_photo_url) && (
+                      <button
+                        type="button"
+                        onClick={handleUseInitials}
+                        disabled={savingProfile}
+                        className="inline-flex items-center gap-1.5 rounded-lg px-2 py-2 text-xs font-medium text-gray-500 transition hover:bg-white hover:text-gray-800 disabled:opacity-50"
+                      >
+                        <X className="h-3.5 w-3.5" aria-hidden="true" />
+                        Hapus foto
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <details className="mt-3">
+                <summary className="cursor-pointer text-xs font-medium text-gray-500 hover:text-gray-800">
+                  Atau gunakan URL gambar
+                </summary>
+                <div className="relative mt-2">
+                  <Link2 className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" aria-hidden="true" />
+                  <input
+                    id="profile-photo-url"
+                    type="url"
+                    placeholder="https://..."
+                    value={profileForm.profile_photo_url}
+                    onChange={handleProfilePhotoUrlChange}
+                    disabled={savingProfile}
+                    className="w-full rounded-lg border border-gray-300 py-2.5 pl-9 pr-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:bg-gray-100"
+                  />
+                </div>
+              </details>
             </div>
 
             <div>
