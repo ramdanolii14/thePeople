@@ -80,6 +80,11 @@ const authenticateToken = (req, res, next) => {
 const uploadJobs = new Map();
 const JOB_RETENTION_MS = 60 * 60 * 1000;
 
+function scheduleUploadJobCleanup(jobId) {
+    const cleanupTimer = setTimeout(() => uploadJobs.delete(jobId), JOB_RETENTION_MS);
+    if (cleanupTimer.unref) cleanupTimer.unref();
+}
+
 function removeFileIfExists(filePath) {
     try {
         if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
@@ -190,6 +195,7 @@ function processVideoUpload(jobId) {
             job.progress = 100;
             job.media_url = baseUrl + '/uploads/hls/' + fileId + '/master.m3u8';
             job.message = 'Video berhasil diproses.';
+            scheduleUploadJobCleanup(jobId);
         } catch (error) {
             console.error('Error saat memproses video:', error);
             job.status = 'failed';
@@ -202,6 +208,7 @@ function processVideoUpload(jobId) {
             } catch (cleanupError) {
                 console.warn('Gagal membersihkan hasil konversi:', cleanupError.message);
             }
+            scheduleUploadJobCleanup(jobId);
         }
     })();
 }
@@ -239,8 +246,6 @@ app.post('/api/upload', authenticateToken, upload.single('media'), async (req, r
             });
 
             setImmediate(() => processVideoUpload(jobId));
-            const cleanupTimer = setTimeout(() => uploadJobs.delete(jobId), JOB_RETENTION_MS);
-            if (cleanupTimer.unref) cleanupTimer.unref();
 
             return res.status(202).json({
                 job_id: jobId,
