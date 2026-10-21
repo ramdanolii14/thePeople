@@ -1,1 +1,14 @@
 @import "tailwindcss";
+
+.media-player-frame {
+  width: min(100%, var(--player-mobile-width, 98.5vh));
+  max-height: 55vh;
+  aspect-ratio: var(--player-aspect-ratio, 16 / 9);
+}
+
+@media (min-width: 768px) {
+  .media-player-frame {
+    width: min(100%, var(--player-desktop-width, 142.2vh));
+    max-height: 80vh;
+  }
+}
