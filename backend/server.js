@@ -74,43 +74,66 @@ const authenticateToken = (req, res, next) => {
 };
 
 // ============================================================================
-// UPLOAD MEDIA + MULTI-RESOLUTION HLS CONVERSION (1080p, 720p, 480p)
+// Upload media. Video diproses sebagai job agar request upload tidak menunggu
+// konversi HLS selesai. Frontend mengambil status melalui endpoint status job.
 // ============================================================================
-app.post('/api/upload', authenticateToken, upload.single('media'), async (req, res) => {
+const uploadJobs = new Map();
+const JOB_RETENTION_MS = 60 * 60 * 1000;
+
+function scheduleUploadJobCleanup(jobId) {
+    const cleanupTimer = setTimeout(() => uploadJobs.delete(jobId), JOB_RETENTION_MS);
+    if (cleanupTimer.unref) cleanupTimer.unref();
+}
+
+function removeFileIfExists(filePath) {
     try {
-        if (!req.file) {
-            return res.status(400).json({ message: 'File tidak diunggah atau ditolak.' });
-        }
+        if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch (error) {
+        console.warn('Gagal membersihkan file upload:', error.message);
+    }
+}
 
-        const filePath = req.file.path;
-        const fileMime = req.file.mimetype;
-        const baseUrl = `${req.protocol}://${req.get('host')}`;
-        const fileId = path.basename(req.file.filename, path.extname(req.file.filename));
+async function createVideoThumbnail(filePath, thumbnailFilename, thumbnailPath) {
+    await new Promise((resolve) => {
+        ffmpeg(filePath)
+            .screenshots({
+                timestamps: ['00:00:01'],
+                filename: thumbnailFilename,
+                folder: UPLOAD_DIR,
+                size: '640x?'
+            })
+            .on('end', resolve)
+            .on('error', (error) => {
+                console.warn('Thumbnail video tidak berhasil dibuat:', error.message);
+                resolve();
+            });
+    });
 
-        if (fileMime.startsWith('video/')) {
-            const outputFolder = path.join(HLS_DIR, fileId);
+    return fs.existsSync(thumbnailPath);
+}
+
+function processVideoUpload(jobId) {
+    const job = uploadJobs.get(jobId);
+    if (!job) return;
+
+    const { filePath, fileId, baseUrl, thumbnailFilename, thumbnailPath } = job;
+    const outputFolder = path.join(HLS_DIR, fileId);
+    const masterPlaylistPath = path.join(outputFolder, 'master.m3u8');
+
+    job.stage = 'thumbnail';
+    job.message = 'Menyiapkan pratinjau video.';
+    job.progress = 2;
+
+    (async () => {
+        try {
             fs.mkdirSync(outputFolder, { recursive: true });
 
-            const thumbnailFilename = `thumb_${fileId}.jpg`;
-            const thumbnailPath = path.join(UPLOAD_DIR, thumbnailFilename);
+            const hasThumbnail = await createVideoThumbnail(filePath, thumbnailFilename, thumbnailPath);
+            job.thumbnail_url = hasThumbnail ? baseUrl + '/uploads/' + thumbnailFilename : null;
+            job.stage = 'conversion';
+            job.message = 'Mengonversi video.';
+            job.progress = 5;
 
-            // 1. Ekstrak thumbnail dari detik pertama
-            await new Promise((resolve) => {
-                ffmpeg(filePath)
-                    .screenshots({
-                        timestamps: ['00:00:01'],
-                        filename: thumbnailFilename,
-                        folder: UPLOAD_DIR,
-                        size: '640x?'
-                    })
-                    .on('end', resolve)
-                    .on('error', () => resolve());
-            });
-
-            // 2. Konversi Multi-Resolusi HLS (1080p, 720p, 480p) + Master Playlist
-            const masterPlaylistPath = path.join(outputFolder, 'master.m3u8');
-            
-            // Subfolder untuk masing-masing resolusi
             const r1080p = path.join(outputFolder, '1080p');
             const r720p = path.join(outputFolder, '720p');
             const r480p = path.join(outputFolder, '480p');
@@ -119,80 +142,165 @@ app.post('/api/upload', authenticateToken, upload.single('media'), async (req, r
             fs.mkdirSync(r480p, { recursive: true });
 
             await new Promise((resolve, reject) => {
-                ffmpeg(filePath)
-                    // Output 1080p
-                    .output(`${r1080p}/index.m3u8`)
+                const command = ffmpeg(filePath)
+                    .output(r1080p + '/index.m3u8')
                     .videoCodec('libx264')
                     .size('1920x1080')
                     .videoBitrate('5000k')
                     .audioCodec('aac')
                     .audioBitrate('192k')
-                    .outputOptions(['-hls_time 10', '-hls_list_size 0', '-f hls'])
+                    .outputOptions(['-preset veryfast', '-hls_time 10', '-hls_list_size 0', '-f hls'])
 
-                    // Output 720p
-                    .output(`${r720p}/index.m3u8`)
+                    .output(r720p + '/index.m3u8')
                     .videoCodec('libx264')
                     .size('1280x720')
                     .videoBitrate('2800k')
                     .audioCodec('aac')
                     .audioBitrate('128k')
-                    .outputOptions(['-hls_time 10', '-hls_list_size 0', '-f hls'])
+                    .outputOptions(['-preset veryfast', '-hls_time 10', '-hls_list_size 0', '-f hls'])
 
-                    // Output 480p
-                    .output(`${r480p}/index.m3u8`)
+                    .output(r480p + '/index.m3u8')
                     .videoCodec('libx264')
                     .size('854x480')
                     .videoBitrate('1400k')
                     .audioCodec('aac')
                     .audioBitrate('96k')
-                    .outputOptions(['-hls_time 10', '-hls_list_size 0', '-f hls'])
+                    .outputOptions(['-preset veryfast', '-hls_time 10', '-hls_list_size 0', '-f hls']);
 
+                const timeout = setTimeout(() => {
+                    command.kill('SIGKILL');
+                }, 45 * 60 * 1000);
+
+                command
+                    .on('progress', (progress) => {
+                        const percent = Number(progress.percent);
+                        if (Number.isFinite(percent)) {
+                            job.progress = Math.max(5, Math.min(98, Math.round(5 + percent * 0.93)));
+                        }
+                    })
                     .on('end', () => {
-                        // Buat file master.m3u8 secara manual
-                        const masterContent = 
-`#EXTM3U
-#EXT-X-VERSION:3
-#EXT-X-STREAM-INF:BANDWIDTH=5500000,RESOLUTION=1920x1080
-1080p/index.m3u8
-#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720
-720p/index.m3u8
-#EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=854x480
-480p/index.m3u8`;
-
-                        fs.writeFileSync(masterPlaylistPath, masterContent);
-                        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+                        clearTimeout(timeout);
                         resolve();
                     })
-                    .on('error', (err) => {
-                        console.error('Error FFmpeg Multi-Resolution:', err);
-                        reject(err);
+                    .on('error', (error) => {
+                        clearTimeout(timeout);
+                        reject(error);
                     })
                     .run();
             });
 
-            const mediaUrl = `${baseUrl}/uploads/hls/${fileId}/master.m3u8`;
-            const thumbnailUrl = fs.existsSync(thumbnailPath) ? `${baseUrl}/uploads/${thumbnailFilename}` : null;
+            const masterContent = [
+                '#EXTM3U',
+                '#EXT-X-VERSION:3',
+                '#EXT-X-STREAM-INF:BANDWIDTH=5500000,RESOLUTION=1920x1080',
+                '1080p/index.m3u8',
+                '#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720',
+                '720p/index.m3u8',
+                '#EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=854x480',
+                '480p/index.m3u8',
+                ''
+            ].join('\n');
+            fs.writeFileSync(masterPlaylistPath, masterContent, 'utf8');
+            removeFileIfExists(filePath);
 
-            return res.json({
-                message: 'Video berhasil dikonversi ke Multi-Resolution HLS',
-                media_url: mediaUrl,
-                thumbnail_url: thumbnailUrl,
-                media_type: 'video'
+            job.status = 'completed';
+            job.stage = 'completed';
+            job.progress = 100;
+            job.media_url = baseUrl + '/uploads/hls/' + fileId + '/master.m3u8';
+            job.message = 'Video berhasil diproses.';
+            scheduleUploadJobCleanup(jobId);
+        } catch (error) {
+            console.error('Error saat memproses video:', error);
+            job.status = 'failed';
+            job.stage = 'failed';
+            job.message = 'Pemrosesan video gagal. Periksa format video dan konfigurasi FFmpeg di server.';
+            job.error = error.message;
+            removeFileIfExists(filePath);
+            try {
+                if (fs.existsSync(outputFolder)) fs.rmSync(outputFolder, { recursive: true, force: true });
+            } catch (cleanupError) {
+                console.warn('Gagal membersihkan hasil konversi:', cleanupError.message);
+            }
+            scheduleUploadJobCleanup(jobId);
+        }
+    })();
+}
+
+app.post('/api/upload', authenticateToken, upload.single('media'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ message: 'File tidak diunggah atau ditolak.' });
+        }
+
+        const filePath = req.file.path;
+        const fileMime = req.file.mimetype;
+        const baseUrl = req.protocol + '://' + req.get('host');
+        const fileId = path.basename(req.file.filename, path.extname(req.file.filename));
+
+        if (fileMime.startsWith('video/')) {
+            const jobId = uuidv4();
+            const thumbnailFilename = 'thumb_' + fileId + '.jpg';
+            const thumbnailPath = path.join(UPLOAD_DIR, thumbnailFilename);
+
+            uploadJobs.set(jobId, {
+                id: jobId,
+                userId: req.userId,
+                status: 'processing',
+                stage: 'queued',
+                progress: 0,
+                message: 'Upload selesai. Menyiapkan pemrosesan video.',
+                filePath,
+                fileId,
+                baseUrl,
+                thumbnailFilename,
+                thumbnailPath,
+                media_url: baseUrl + '/uploads/hls/' + fileId + '/master.m3u8',
+                thumbnail_url: null
+            });
+
+            setImmediate(() => processVideoUpload(jobId));
+
+            return res.status(202).json({
+                job_id: jobId,
+                status: 'processing',
+                progress: 0,
+                message: 'Upload selesai. Video sedang diproses.'
             });
         }
 
-        // Jika Gambar
-        res.json({
+        return res.json({
             message: 'Gambar berhasil diunggah',
-            media_url: `${baseUrl}/uploads/${req.file.filename}`,
-            thumbnail_url: `${baseUrl}/uploads/${req.file.filename}`,
+            media_url: baseUrl + '/uploads/' + req.file.filename,
+            thumbnail_url: baseUrl + '/uploads/' + req.file.filename,
             media_type: 'image'
         });
-
     } catch (error) {
-        if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-        res.status(500).json({ message: 'Gagal mengunggah file', error: error.message });
+        if (req.file && fs.existsSync(req.file.path)) removeFileIfExists(req.file.path);
+        return res.status(500).json({ message: 'Gagal mengunggah file', error: error.message });
     }
+});
+
+app.get('/api/upload/:jobId/status', authenticateToken, (req, res) => {
+    const job = uploadJobs.get(req.params.jobId);
+    if (!job) {
+        return res.status(404).json({
+            status: 'failed',
+            message: 'Status upload tidak ditemukan. Silakan unggah ulang video.'
+        });
+    }
+    if (Number(job.userId) !== Number(req.userId)) {
+        return res.status(403).json({ message: 'Anda tidak memiliki akses ke status upload ini.' });
+    }
+
+    return res.json({
+        job_id: job.id,
+        status: job.status,
+        stage: job.stage,
+        progress: job.progress,
+        message: job.message,
+        media_url: job.status === 'completed' ? job.media_url : undefined,
+        thumbnail_url: job.status === 'completed' ? job.thumbnail_url : undefined
+    });
 });
 
 // Endpoint Statistik, Auth, Users, Posts, Likes, dan Comments tetap seperti sebelumnya...
